@@ -652,6 +652,22 @@ func excludeCWDPredicate(patterns []string) func(cwd string) bool {
 	}
 }
 
+// QueryAllSessions returns every discovered session regardless of the time
+// window, minus sub-agents and CWD exclusions. The slice is a copy, safe to use
+// while the manager keeps reloading.
+func (m *SessionManager) QueryAllSessions() []*model.Session {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var all []*model.Session
+	for _, s := range m.sessions {
+		if s.IsSidechain || excludedByCWD(s.CWD, m.excludeCWDSubstrings) {
+			continue
+		}
+		all = append(all, s)
+	}
+	return all
+}
+
 // filterSessionsLocked applies time window, activity, and search filters.
 // Must be called with m.mu held (at least RLock).
 func (m *SessionManager) filterSessionsLocked(search string, filter ActivityKind) []*model.Session {

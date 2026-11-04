@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,9 +33,16 @@ func NewDesktopCache() *DesktopCache {
 	return &DesktopCache{entries: make(map[string]desktopCacheEntry)}
 }
 
+// GitTimeout bounds every git call made while discovering sessions, so one
+// blocked git (a macOS permission prompt, a dead mount) cannot freeze discovery.
+const GitTimeout = 3 * time.Second
+
 // IsWorktree detects if a path is a git worktree and returns the main repo.
+// A git that does not answer within GitTimeout counts as "not a worktree".
 func IsWorktree(path string) (bool, string) {
-	out, err := exec.Command("git", "-C", path, "rev-parse", "--git-dir").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), GitTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--git-dir").Output()
 	if err != nil {
 		return false, ""
 	}

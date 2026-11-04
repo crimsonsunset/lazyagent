@@ -60,6 +60,10 @@ type Session struct {
 	Model       string // model being used
 	GitBranch   string
 	IsSidechain bool // true = sub-agent spawned by another session
+	CLI         bool // true = Cursor CLI (cursor-agent) session rather than an IDE chat
+
+	// TouchedBranches are the other branches the chat worked on (Cursor IDE only).
+	TouchedBranches []string
 
 	// Git / worktree
 	IsWorktree bool

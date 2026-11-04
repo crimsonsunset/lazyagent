@@ -50,3 +50,23 @@ func stateDBPathFor(goos, home, xdgConfigHome, appData string) string {
 	}
 	return filepath.Join(base, "User", "globalStorage", "state.vscdb")
 }
+
+// searchDBPath returns Cursor's conversation-search.db, which sits beside
+// state.vscdb, or "" when the state path is unknown.
+func searchDBPath() string {
+	p := stateDBPath()
+	if p == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(p), "conversation-search.db")
+}
+
+// cliChatsDir returns the directory where the Cursor CLI keeps one folder per
+// session, or "" when the home directory cannot be resolved.
+func cliChatsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".cursor", "chats")
+}

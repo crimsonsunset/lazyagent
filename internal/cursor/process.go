@@ -1,6 +1,7 @@
 package cursor
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -19,12 +20,13 @@ import (
 )
 
 // recentWindow controls how far back we look for sessions.
-const recentWindow = 48 * time.Hour
+const recentWindow = 30 * 24 * time.Hour
 
 // SessionCache holds per-session cached data and WAL state for invalidation.
 type SessionCache struct {
 	mu      sync.Mutex
 	entries map[string]*cachedSession
+	cli     map[string]*cachedCLI
 
 	lastWALMtime time.Time
 	lastWALSize  int64
@@ -47,7 +49,7 @@ type composerSummary struct {
 
 // NewSessionCache creates an empty Cursor session cache.
 func NewSessionCache() *SessionCache {
-	return &SessionCache{entries: make(map[string]*cachedSession)}
+	return &SessionCache{entries: make(map[string]*cachedSession), cli: make(map[string]*cachedCLI)}
 }
 
 // StateDBDir returns the directory containing state.vscdb for WatchDirs.
@@ -59,13 +61,20 @@ func StateDBDir() string {
 	return filepath.Dir(p)
 }
 
-// DiscoverSessions discovers recent Cursor sessions from state.vscdb.
+// DiscoverSessions discovers recent Cursor sessions: IDE chats from state.vscdb
+// and CLI sessions from ~/.cursor/chats.
+func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
+	ide, err := discoverIDESessions(cache)
+	return append(ide, DiscoverCLISessions(cache)...), err
+}
+
+// discoverIDESessions discovers recent Cursor IDE chats from state.vscdb.
 //
 // Strategy:
 //  1. Read composerData entries (330ms) to get session IDs + bubble counts + last bubble ID.
-//  2. For each session in 48h window, look up last bubble's createdAt (7ms each).
+//  2. For each session in the recent window, look up last bubble's createdAt (7ms each).
 //  3. Only re-parse full bubble data when bubble count changes.
-func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
+func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	dbPath := stateDBPath()
 	if dbPath == "" {
 		return nil, nil
@@ -99,12 +108,8 @@ func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
 	// Step 2: For each composer, get last bubble timestamp and filter to recent.
 	cutoff := time.Now().Add(-recentWindow)
 
-	type wtInfo struct {
-		isWorktree bool
-		mainRepo   string
-		branch     string
-	}
-	wtCache := make(map[string]wtInfo)
+	wtCache := make(map[string]worktreeInfo)
+	touched := touchedBranches()
 	var sessions []*model.Session
 	hasPartialRead := false
 
@@ -153,14 +158,14 @@ func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
 		// Git worktree detection.
 		if session.CWD != "" {
 			if _, ok := wtCache[session.CWD]; !ok {
-				isWT, mainRepo := claude.IsWorktree(session.CWD)
-				wtCache[session.CWD] = wtInfo{isWorktree: isWT, mainRepo: mainRepo, branch: gitBranch(session.CWD)}
+				wtCache[session.CWD] = lookupWorktree(session.CWD)
 			}
 			wt := wtCache[session.CWD]
 			session.IsWorktree = wt.isWorktree
 			session.MainRepo = wt.mainRepo
 			session.GitBranch = wt.branch
 		}
+		session.TouchedBranches = otherBranches(touched[c.sid], session.GitBranch)
 
 		sessions = append(sessions, session)
 
@@ -240,6 +245,7 @@ func chunkedHeaderKey(sid string, chunk int) string {
 }
 
 // queryComposers reads composerData entries to get session summaries.
+// Subagent chats (subagentInfo set) are skipped: they are spawned by a parent chat.
 // Uses json_extract on the last element of fullConversationHeadersOnly and
 // falls back to the chunked composerConvHeaders keys for recently updated
 // composers whose inline list is empty.
@@ -254,6 +260,7 @@ func queryComposers(db *sql.DB) ([]composerSummary, error) {
 		       json_extract(value, '$.name')
 		FROM cursorDiskKV
 		WHERE key >= 'composerData:' AND key < 'composerData;'
+		  AND json_extract(value, '$.subagentInfo') IS NULL
 	`)
 	if err != nil {
 		return nil, err
@@ -593,8 +600,11 @@ func inferWorkspace(paths []string) string {
 // gitBranch returns the branch checked out at path, or "" when path is not a
 // git checkout or HEAD is detached. Cursor does not record a branch, so this
 // reads it from the working directory the chat ran in (a worktree has its own).
+// A git that does not answer within claude.GitTimeout gives "".
 func gitBranch(path string) string {
-	out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), claude.GitTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
 		return ""
 	}
