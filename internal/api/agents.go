@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,8 +15,8 @@ import (
 )
 
 const (
-	// cursorKeyEnv holds the Cursor API key used to list cloud agents.
-	// Unset disables the cloud half of /api/agents.
+	// cursorKeyEnv holds the Cursor API keys (comma separated, one per account)
+	// used to list cloud agents. Unset disables the cloud half of /api/agents.
 	cursorKeyEnv      = "LAZYAGENT_CURSOR_API_KEY"
 	cursorAPIBase     = "https://api.cursor.com"
 	cloudCacheTTL     = 30 * time.Second
@@ -53,34 +54,62 @@ type AgentsResponse struct {
 // several consumers polling /api/agents make one upstream call per TTL.
 type cloudAgents struct {
 	baseURL string
-	apiKey  string
+	apiKeys []string
 	client  *http.Client
 
-	mu      sync.Mutex
-	cached  []AgentItem
-	fetched time.Time
+	mu        sync.Mutex
+	cached    []AgentItem
+	cachedErr error
+	fetched   time.Time
 }
 
-func newCloudAgents(baseURL, apiKey string) *cloudAgents {
-	return &cloudAgents{baseURL: baseURL, apiKey: apiKey, client: &http.Client{Timeout: cloudFetchTimeout}}
+// newCloudAgents takes a comma separated list of Cursor API keys, one per account.
+func newCloudAgents(baseURL, apiKeys string) *cloudAgents {
+	var keys []string
+	for _, key := range strings.Split(apiKeys, ",") {
+		if key = strings.TrimSpace(key); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return &cloudAgents{baseURL: baseURL, apiKeys: keys, client: &http.Client{Timeout: cloudFetchTimeout}}
 }
 
-// enabled reports whether a Cursor API key is configured.
-func (c *cloudAgents) enabled() bool { return c.apiKey != "" }
+// enabled reports whether at least one Cursor API key is configured.
+func (c *cloudAgents) enabled() bool { return len(c.apiKeys) > 0 }
 
-// list returns all cloud agents, newest first, from cache when fresh.
+// list returns cloud agents from every account, from cache when fresh. A
+// failing account is reported in the error while the others still return.
 func (c *cloudAgents) list() ([]AgentItem, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.fetched.IsZero() && time.Since(c.fetched) < cloudCacheTTL {
-		return c.cached, nil
+		return c.cached, c.cachedErr
 	}
 
+	var items []AgentItem
+	var failures []string
+	for i, key := range c.apiKeys {
+		account, err := c.fetchAccount(key)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("account %d: %v", i+1, err))
+			continue
+		}
+		items = append(items, account...)
+	}
+	c.cached, c.fetched, c.cachedErr = items, time.Now(), nil
+	if len(failures) > 0 {
+		c.cachedErr = errors.New(strings.Join(failures, "; "))
+	}
+	return c.cached, c.cachedErr
+}
+
+// fetchAccount lists the cloud agents of one Cursor account.
+func (c *cloudAgents) fetchAccount(apiKey string) ([]AgentItem, error) {
 	req, err := http.NewRequest("GET", c.baseURL+"/v1/agents?limit=100", nil)
 	if err != nil {
 		return nil, err
 	}
-	req.SetBasicAuth(c.apiKey, "")
+	req.SetBasicAuth(apiKey, "")
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -108,6 +137,9 @@ func (c *cloudAgents) list() ([]AgentItem, error) {
 
 	items := make([]AgentItem, 0, len(body.Items))
 	for _, a := range body.Items {
+		if strings.EqualFold(a.Status, "ARCHIVED") {
+			continue
+		}
 		item := AgentItem{
 			ID:        a.ID,
 			Source:    "cloud",
@@ -122,7 +154,6 @@ func (c *cloudAgents) list() ([]AgentItem, error) {
 		}
 		items = append(items, item)
 	}
-	c.cached, c.fetched = items, time.Now()
 	return items, nil
 }
 
