@@ -333,7 +333,7 @@ Also triggers an SSE `update`.
 
 IDE chats and Cursor cloud agents in one list, with a shared status. Idle agents are omitted unless `?all=true`.
 
-Cloud agents need `LAZYAGENT_CURSOR_API_KEY` in the server's environment. Without it only IDE chats are returned. Cloud results are cached for 30 seconds.
+Cloud agents need `LAZYAGENT_CURSOR_API_KEY` in the server's environment: one Cursor API key, or several comma separated to cover multiple accounts. A failing account is listed in `errors` and the others still return. Archived cloud agents are left out. Without a key only IDE chats are returned. Cloud results are cached for 30 seconds.
 
 **Response: `200 OK`**
 

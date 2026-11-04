@@ -112,6 +112,33 @@ func TestGetAgentsReportsCloudErrorButKeepsIDE(t *testing.T) {
 	}
 }
 
+func TestGetAgentsMergesAccountsAndSurvivesOneFailing(t *testing.T) {
+	srv, ts := newTestServer(t)
+	defer ts.Close()
+
+	cursor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, _, _ := r.BasicAuth()
+		switch user {
+		case "good-a":
+			w.Write([]byte(`{"items":[{"id":"a-1","name":"a","status":"ACTIVE","updatedAt":"2026-11-03T20:00:00Z"},{"id":"a-2","name":"gone","status":"ARCHIVED","updatedAt":"2026-11-03T22:00:00Z"}]}`))
+		case "good-b":
+			w.Write([]byte(`{"items":[{"id":"b-1","name":"b","status":"ACTIVE","updatedAt":"2026-11-03T21:00:00Z"}]}`))
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer cursor.Close()
+	srv.cloud = newCloudAgents(cursor.URL, " good-a, bad ,good-b,")
+
+	out := getAgentsAt(t, ts.URL+"/api/agents?all=true")
+	if len(out.Agents) != 2 || out.Agents[0].ID != "b-1" || out.Agents[1].ID != "a-1" {
+		t.Errorf("agents = %+v, want b-1 then a-1 (archived a-2 dropped)", out.Agents)
+	}
+	if len(out.Errors) != 1 {
+		t.Errorf("errors = %v, want one for the bad account", out.Errors)
+	}
+}
+
 func TestGetAgentsWithoutKeySkipsCloud(t *testing.T) {
 	_, ts := newTestServer(t)
 	defer ts.Close()
