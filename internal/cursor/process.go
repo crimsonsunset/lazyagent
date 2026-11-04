@@ -41,6 +41,7 @@ type composerSummary struct {
 	sid        string
 	count      int
 	lastBubble string // UUID of last bubble
+	name       string // chat title shown in Cursor's UI, empty until Cursor names it
 }
 
 // NewSessionCache creates an empty Cursor session cache.
@@ -135,6 +136,7 @@ func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
 		// Need to (re-)parse this session's bubbles.
 		session := &model.Session{
 			SessionID:     c.sid,
+			Name:          c.name,
 			Agent:         "cursor",
 			LastActivity:  lastAt,
 			TotalMessages: c.count,
@@ -245,7 +247,8 @@ func queryComposers(db *sql.DB) ([]composerSummary, error) {
 		       json_extract(value, '$.fullConversationHeadersOnly[#-1].bubbleId'),
 		       json_extract(value, '$.headerLog.count'),
 		       json_extract(value, '$.headerLog.chunkCount'),
-		       json_extract(value, '$.lastUpdatedAt')
+		       json_extract(value, '$.lastUpdatedAt'),
+		       json_extract(value, '$.name')
 		FROM cursorDiskKV
 		WHERE key >= 'composerData:' AND key < 'composerData;'
 	`)
@@ -256,6 +259,7 @@ func queryComposers(db *sql.DB) ([]composerSummary, error) {
 
 	type chunkedComposer struct {
 		sid        string
+		name       string
 		count      int
 		chunkCount int
 	}
@@ -264,18 +268,21 @@ func queryComposers(db *sql.DB) ([]composerSummary, error) {
 	cutoffMs := time.Now().Add(-recentWindow).UnixMilli()
 	for rows.Next() {
 		var c composerSummary
-		var lastBubble *string
+		var lastBubble, name *string
 		var logCount, chunkCount, updatedMs *int64
-		if err := rows.Scan(&c.sid, &c.count, &lastBubble, &logCount, &chunkCount, &updatedMs); err != nil {
+		if err := rows.Scan(&c.sid, &c.count, &lastBubble, &logCount, &chunkCount, &updatedMs, &name); err != nil {
 			continue
 		}
 		if lastBubble != nil {
 			c.lastBubble = *lastBubble
 		}
+		if name != nil {
+			c.name = *name
+		}
 		isRecentChunked := c.count == 0 && logCount != nil && chunkCount != nil && *chunkCount > 0 &&
 			updatedMs != nil && *updatedMs >= cutoffMs
 		if isRecentChunked {
-			chunked = append(chunked, chunkedComposer{c.sid, int(*logCount), int(*chunkCount)})
+			chunked = append(chunked, chunkedComposer{c.sid, c.name, int(*logCount), int(*chunkCount)})
 			continue
 		}
 		result = append(result, c)
@@ -292,7 +299,7 @@ func queryComposers(db *sql.DB) ([]composerSummary, error) {
 		if err != nil || lastBubble == nil {
 			continue
 		}
-		result = append(result, composerSummary{sid: cc.sid, count: cc.count, lastBubble: *lastBubble})
+		result = append(result, composerSummary{sid: cc.sid, name: cc.name, count: cc.count, lastBubble: *lastBubble})
 	}
 	return result, nil
 }
