@@ -18,10 +18,8 @@ import (
 const (
 	// cursorKeyEnv holds the Cursor API keys (comma separated, one per account)
 	// used to list cloud agents. Unset disables the cloud half of /api/agents.
-	cursorKeyEnv      = "LAZYAGENT_CURSOR_API_KEY"
-	cursorAPIBase     = "https://api.cursor.com"
-	cloudCacheTTL     = 30 * time.Second
-	cloudFetchTimeout = 10 * time.Second
+	cursorKeyEnv  = "LAZYAGENT_CURSOR_API_KEY"
+	cursorAPIBase = "https://api.cursor.com"
 )
 
 // Normalized agent states shared by IDE and cloud agents.
@@ -58,6 +56,8 @@ type cloudAgents struct {
 	baseURL string
 	apiKeys []string
 	client  *http.Client
+	ttl     time.Duration
+	limit   int
 
 	mu         sync.Mutex
 	cached     []AgentItem
@@ -66,15 +66,22 @@ type cloudAgents struct {
 	refreshing bool
 }
 
-// newCloudAgents takes a comma separated list of Cursor API keys, one per account.
-func newCloudAgents(baseURL, apiKeys string) *cloudAgents {
+// newCloudAgents takes a comma separated list of Cursor API keys, one per account,
+// and the cache, timeout and page limits from config.json "cloud".
+func newCloudAgents(baseURL, apiKeys string, limits core.CloudConfig) *cloudAgents {
 	var keys []string
 	for _, key := range strings.Split(apiKeys, ",") {
 		if key = strings.TrimSpace(key); key != "" {
 			keys = append(keys, key)
 		}
 	}
-	return &cloudAgents{baseURL: baseURL, apiKeys: keys, client: &http.Client{Timeout: cloudFetchTimeout}}
+	return &cloudAgents{
+		baseURL: baseURL,
+		apiKeys: keys,
+		client:  &http.Client{Timeout: time.Duration(limits.FetchTimeoutSec) * time.Second},
+		ttl:     time.Duration(limits.CacheTTLSec) * time.Second,
+		limit:   limits.PageLimit,
+	}
 }
 
 // enabled reports whether at least one Cursor API key is configured.
@@ -91,7 +98,7 @@ func (c *cloudAgents) list() ([]AgentItem, error) {
 		c.store(c.fetchAll())
 		return c.cached, c.cachedErr
 	}
-	if time.Since(c.fetched) >= cloudCacheTTL && !c.refreshing {
+	if time.Since(c.fetched) >= c.ttl && !c.refreshing {
 		c.refreshing = true
 		go c.refresh()
 	}
@@ -143,7 +150,7 @@ func (c *cloudAgents) fetchAll() ([]AgentItem, error) {
 
 // fetchAccount lists the cloud agents of one Cursor account.
 func (c *cloudAgents) fetchAccount(apiKey string) ([]AgentItem, error) {
-	req, err := http.NewRequest("GET", c.baseURL+"/v1/agents?limit=100", nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/v1/agents?limit=%d", c.baseURL, c.limit), nil)
 	if err != nil {
 		return nil, err
 	}

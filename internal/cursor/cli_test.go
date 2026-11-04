@@ -29,7 +29,7 @@ func TestDiscoverCLISessions(t *testing.T) {
 	runGit(t, repo, "commit", "--allow-empty", "-m", "init")
 
 	writeCLIMeta(t, home, "fresh", repo, time.Now(), true)
-	writeCLIMeta(t, home, "stale", repo, time.Now().Add(-3*recentWindow), true)
+	writeCLIMeta(t, home, "stale", repo, time.Now().Add(-3*RecentWindow), true)
 	writeCLIMeta(t, home, "empty", repo, time.Now(), false)
 
 	sessions := DiscoverCLISessions(NewSessionCache())

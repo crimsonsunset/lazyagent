@@ -35,18 +35,29 @@ func NewDesktopCache() *DesktopCache {
 
 // GitTimeout bounds every git call made while discovering sessions, so one
 // blocked git (a macOS permission prompt, a dead mount) cannot freeze discovery.
-const GitTimeout = 3 * time.Second
+// Set from config.json "discovery.git_timeout_sec" at startup (core.ApplyDiscovery).
+var GitTimeout = 3 * time.Second
+
+// GitRevParse runs `git -C path rev-parse args...` and returns its trimmed output.
+// It never reads the user's or the system's git config (rev-parse does not need
+// it, and a ~/.gitconfig symlinked into a macOS-protected folder blocks git in
+// open() until the privacy prompt is answered), and it gives up after GitTimeout.
+func GitRevParse(path string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), GitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path, "rev-parse"}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}
 
 // IsWorktree detects if a path is a git worktree and returns the main repo.
 // A git that does not answer within GitTimeout counts as "not a worktree".
 func IsWorktree(path string) (bool, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), GitTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--git-dir").Output()
+	gitDir, err := GitRevParse(path, "--git-dir")
 	if err != nil {
 		return false, ""
 	}
-	gitDir := strings.TrimSpace(string(out))
 
 	// In a regular repo: .git
 	// In a worktree: absolute path like /repo/.git/worktrees/name

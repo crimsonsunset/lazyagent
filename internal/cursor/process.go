@@ -1,13 +1,11 @@
 package cursor
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -19,8 +17,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// recentWindow controls how far back we look for sessions.
-const recentWindow = 30 * 24 * time.Hour
+// RecentWindow controls how far back we look for sessions. Set from
+// config.json "discovery.recent_days" at startup (core.ApplyDiscovery).
+var RecentWindow = 30 * 24 * time.Hour
 
 // SessionCache holds per-session cached data and WAL state for invalidation.
 type SessionCache struct {
@@ -106,7 +105,7 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	}
 
 	// Step 2: For each composer, get last bubble timestamp and filter to recent.
-	cutoff := time.Now().Add(-recentWindow)
+	cutoff := time.Now().Add(-RecentWindow)
 
 	wtCache := make(map[string]worktreeInfo)
 	touched := touchedBranches()
@@ -207,7 +206,7 @@ func cachedResults(cache *SessionCache) []*model.Session {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
-	cutoff := time.Now().Add(-recentWindow)
+	cutoff := time.Now().Add(-RecentWindow)
 	var sessions []*model.Session
 	for _, c := range cache.entries {
 		if c.session.LastActivity.After(cutoff) {
@@ -275,7 +274,7 @@ func queryComposers(db *sql.DB) ([]composerSummary, error) {
 	}
 	var result []composerSummary
 	var chunked []chunkedComposer
-	cutoffMs := time.Now().Add(-recentWindow).UnixMilli()
+	cutoffMs := time.Now().Add(-RecentWindow).UnixMilli()
 	for rows.Next() {
 		var c composerSummary
 		var lastBubble, name *string
@@ -602,13 +601,10 @@ func inferWorkspace(paths []string) string {
 // reads it from the working directory the chat ran in (a worktree has its own).
 // A git that does not answer within claude.GitTimeout gives "".
 func gitBranch(path string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), claude.GitTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	branch, err := claude.GitRevParse(path, "--abbrev-ref", "HEAD")
 	if err != nil {
 		return ""
 	}
-	branch := strings.TrimSpace(string(out))
 	if branch == "HEAD" {
 		return ""
 	}

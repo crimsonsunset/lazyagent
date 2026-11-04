@@ -40,7 +40,7 @@ func lookupWorktree(cwd string) worktreeInfo {
 	return worktreeInfo{isWorktree: isWT, mainRepo: mainRepo, branch: gitBranch(cwd)}
 }
 
-// DiscoverCLISessions lists Cursor CLI sessions updated inside recentWindow.
+// DiscoverCLISessions lists Cursor CLI sessions updated inside RecentWindow.
 // meta.json is the only source: Cursor records no running state for the CLI, so
 // a session counts as active only while its updatedAtMs is fresh (the activity
 // timeout in core turns a stale one idle).
@@ -50,7 +50,7 @@ func DiscoverCLISessions(cache *SessionCache) []*model.Session {
 		return nil
 	}
 	paths, _ := filepath.Glob(filepath.Join(dir, "*", "*", "meta.json"))
-	cutoffMs := time.Now().Add(-recentWindow).UnixMilli()
+	cutoffMs := time.Now().Add(-RecentWindow).UnixMilli()
 
 	var sessions []*model.Session
 	seen := make(map[string]struct{}, len(paths))

@@ -68,7 +68,7 @@ func New(host string, provider core.SessionProvider, bearerToken, authSalt strin
 	s := &Server{
 		manager:  manager,
 		authSalt: authSalt,
-		cloud:    newCloudAgents(cursorAPIBase, cursorKeyFromEnv()),
+		cloud:    newCloudAgents(cursorAPIBase, cursorKeyFromEnv(), cfg.Cloud),
 		sseSubs:  make(map[chan struct{}]struct{}),
 	}
 	s.mux = http.NewServeMux()

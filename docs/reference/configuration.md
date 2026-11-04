@@ -115,6 +115,27 @@ Useful for hiding background or automated sessions (e.g. observer processes, aut
 
 Substring matching is intentional and broad: `"test"` would also hide `/home/me/projects/latest`. Use a path-shaped fragment (with a `/` in it) when you want to be specific.
 
+### `discovery` and `cloud`
+
+How much history lazyagent reads for Cursor. Every key is a positive integer. A zero, negative or missing value falls back to its default, and the first start writes the whole block into the file. Restart lazyagent after editing.
+
+```json
+{
+  "discovery": { "recent_days": 30, "git_timeout_sec": 3 },
+  "cloud": { "cache_ttl_sec": 30, "fetch_timeout_sec": 10, "page_limit": 100 }
+}
+```
+
+| Key | Default | Controls |
+|---|---|---|
+| `discovery.recent_days` | `30` | How far back Cursor IDE chats and `cursor-agent` CLI sessions are listed |
+| `discovery.git_timeout_sec` | `3` | Time limit on each `git` call that reads a branch or worktree. A git that does not answer counts as "no branch" |
+| `cloud.cache_ttl_sec` | `30` | How long the Cursor cloud agent list is served before a background refresh. Stale data is returned meanwhile |
+| `cloud.fetch_timeout_sec` | `10` | Time limit on one Cursor API call (one per account) |
+| `cloud.page_limit` | `100` | Most cloud agents read per account |
+
+`window_minutes` still sets the live window of the TUI and tray. `GET /api/agents?all=true` ignores it and uses `discovery.recent_days`.
+
 ### `api_passphrase`
 
 Default: `""` (empty — auth not yet configured). The passphrase used with `api_salt` to derive the bearer token that protects the [HTTP API](../interfaces/http-api.md). Created interactively on the first run of `lazyagent --api`; values shorter than 12 characters are rejected. You can edit it manually here at any time, and the next API server startup will derive a new token from it.
