@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -101,6 +102,7 @@ func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
 	type wtInfo struct {
 		isWorktree bool
 		mainRepo   string
+		branch     string
 	}
 	wtCache := make(map[string]wtInfo)
 	var sessions []*model.Session
@@ -152,11 +154,12 @@ func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
 		if session.CWD != "" {
 			if _, ok := wtCache[session.CWD]; !ok {
 				isWT, mainRepo := claude.IsWorktree(session.CWD)
-				wtCache[session.CWD] = wtInfo{isWorktree: isWT, mainRepo: mainRepo}
+				wtCache[session.CWD] = wtInfo{isWorktree: isWT, mainRepo: mainRepo, branch: gitBranch(session.CWD)}
 			}
 			wt := wtCache[session.CWD]
 			session.IsWorktree = wt.isWorktree
 			session.MainRepo = wt.mainRepo
+			session.GitBranch = wt.branch
 		}
 
 		sessions = append(sessions, session)
@@ -585,6 +588,21 @@ func inferWorkspace(paths []string) string {
 		return root
 	}
 	return result
+}
+
+// gitBranch returns the branch checked out at path, or "" when path is not a
+// git checkout or HEAD is detached. Cursor does not record a branch, so this
+// reads it from the working directory the chat ran in (a worktree has its own).
+func gitBranch(path string) string {
+	out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "HEAD" {
+		return ""
+	}
+	return branch
 }
 
 // findProjectRoot walks up from a path looking for a project root.
