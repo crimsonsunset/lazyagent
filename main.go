@@ -150,6 +150,7 @@ If you find lazyagent useful, leave a ⭐ → https://github.com/illegalstudio/l
 
 	// Build the session provider based on flags and config.
 	cfg := core.LoadConfig()
+	core.ApplyDiscovery(cfg)
 	var provider core.SessionProvider
 	if *demoMode {
 		provider = demo.Provider{}

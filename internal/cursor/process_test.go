@@ -63,7 +63,7 @@ func TestQueryComposersChunkedHeaders(t *testing.T) {
 
 func TestQueryComposersDoesNotResolveStaleChunked(t *testing.T) {
 	db := newTestDB(t)
-	seedChunked(t, db, "old", time.Now().Add(-recentWindow-time.Hour).UnixMilli())
+	seedChunked(t, db, "old", time.Now().Add(-RecentWindow-time.Hour).UnixMilli())
 
 	got, err := queryComposers(db)
 	if err != nil {

@@ -55,7 +55,7 @@ func TestGetAgentsMergesIDEAndCloud(t *testing.T) {
 	calls := 0
 	cursor := fakeCursorAPI(t, &calls)
 	defer cursor.Close()
-	srv.cloud = newCloudAgents(cursor.URL, "key")
+	srv.cloud = newCloudAgents(cursor.URL, "key", testCloudLimits)
 
 	active := getAgents(t, ts.URL)
 	if len(active.Errors) != 0 {
@@ -87,7 +87,7 @@ func TestGetAgentsCachesCloudCalls(t *testing.T) {
 	calls := 0
 	cursor := fakeCursorAPI(t, &calls)
 	defer cursor.Close()
-	srv.cloud = newCloudAgents(cursor.URL, "key")
+	srv.cloud = newCloudAgents(cursor.URL, "key", testCloudLimits)
 
 	getAgents(t, ts.URL)
 	getAgents(t, ts.URL)
@@ -104,7 +104,7 @@ func TestGetAgentsReportsCloudErrorButKeepsIDE(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer broken.Close()
-	srv.cloud = newCloudAgents(broken.URL, "key")
+	srv.cloud = newCloudAgents(broken.URL, "key", testCloudLimits)
 
 	out := getAgents(t, ts.URL)
 	if len(out.Errors) != 1 {
@@ -128,7 +128,7 @@ func TestGetAgentsMergesAccountsAndSurvivesOneFailing(t *testing.T) {
 		}
 	}))
 	defer cursor.Close()
-	srv.cloud = newCloudAgents(cursor.URL, " good-a, bad ,good-b,")
+	srv.cloud = newCloudAgents(cursor.URL, " good-a, bad ,good-b,", testCloudLimits)
 
 	out := getAgentsAt(t, ts.URL+"/api/agents?all=true")
 	if len(out.Agents) != 2 || out.Agents[0].ID != "b-1" || out.Agents[1].ID != "a-1" {

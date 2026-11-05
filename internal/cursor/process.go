@@ -17,13 +17,15 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// recentWindow controls how far back we look for sessions.
-const recentWindow = 48 * time.Hour
+// RecentWindow controls how far back we look for sessions. Set from
+// config.json "discovery.recent_days" at startup (core.ApplyDiscovery).
+var RecentWindow = 30 * 24 * time.Hour
 
 // SessionCache holds per-session cached data and WAL state for invalidation.
 type SessionCache struct {
 	mu      sync.Mutex
 	entries map[string]*cachedSession
+	cli     map[string]*cachedCLI
 
 	lastWALMtime time.Time
 	lastWALSize  int64
@@ -46,7 +48,7 @@ type composerSummary struct {
 
 // NewSessionCache creates an empty Cursor session cache.
 func NewSessionCache() *SessionCache {
-	return &SessionCache{entries: make(map[string]*cachedSession)}
+	return &SessionCache{entries: make(map[string]*cachedSession), cli: make(map[string]*cachedCLI)}
 }
 
 // StateDBDir returns the directory containing state.vscdb for WatchDirs.
@@ -58,13 +60,20 @@ func StateDBDir() string {
 	return filepath.Dir(p)
 }
 
-// DiscoverSessions discovers recent Cursor sessions from state.vscdb.
+// DiscoverSessions discovers recent Cursor sessions: IDE chats from state.vscdb
+// and CLI sessions from ~/.cursor/chats.
+func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
+	ide, err := discoverIDESessions(cache)
+	return append(ide, DiscoverCLISessions(cache)...), err
+}
+
+// discoverIDESessions discovers recent Cursor IDE chats from state.vscdb.
 //
 // Strategy:
 //  1. Read composerData entries (330ms) to get session IDs + bubble counts + last bubble ID.
-//  2. For each session in 48h window, look up last bubble's createdAt (7ms each).
+//  2. For each session in the recent window, look up last bubble's createdAt (7ms each).
 //  3. Only re-parse full bubble data when bubble count changes.
-func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
+func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	dbPath := stateDBPath()
 	if dbPath == "" {
 		return nil, nil
@@ -96,13 +105,10 @@ func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
 	}
 
 	// Step 2: For each composer, get last bubble timestamp and filter to recent.
-	cutoff := time.Now().Add(-recentWindow)
+	cutoff := time.Now().Add(-RecentWindow)
 
-	type wtInfo struct {
-		isWorktree bool
-		mainRepo   string
-	}
-	wtCache := make(map[string]wtInfo)
+	wtCache := make(map[string]worktreeInfo)
+	touched := touchedBranches()
 	var sessions []*model.Session
 	hasPartialRead := false
 
@@ -151,13 +157,14 @@ func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
 		// Git worktree detection.
 		if session.CWD != "" {
 			if _, ok := wtCache[session.CWD]; !ok {
-				isWT, mainRepo := claude.IsWorktree(session.CWD)
-				wtCache[session.CWD] = wtInfo{isWorktree: isWT, mainRepo: mainRepo}
+				wtCache[session.CWD] = lookupWorktree(session.CWD)
 			}
 			wt := wtCache[session.CWD]
 			session.IsWorktree = wt.isWorktree
 			session.MainRepo = wt.mainRepo
+			session.GitBranch = wt.branch
 		}
+		session.TouchedBranches = otherBranches(touched[c.sid], session.GitBranch)
 
 		sessions = append(sessions, session)
 
@@ -199,7 +206,7 @@ func cachedResults(cache *SessionCache) []*model.Session {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
-	cutoff := time.Now().Add(-recentWindow)
+	cutoff := time.Now().Add(-RecentWindow)
 	var sessions []*model.Session
 	for _, c := range cache.entries {
 		if c.session.LastActivity.After(cutoff) {
@@ -237,6 +244,7 @@ func chunkedHeaderKey(sid string, chunk int) string {
 }
 
 // queryComposers reads composerData entries to get session summaries.
+// Subagent chats (subagentInfo set) are skipped: they are spawned by a parent chat.
 // Uses json_extract on the last element of fullConversationHeadersOnly and
 // falls back to the chunked composerConvHeaders keys for recently updated
 // composers whose inline list is empty.
@@ -251,6 +259,7 @@ func queryComposers(db *sql.DB) ([]composerSummary, error) {
 		       json_extract(value, '$.name')
 		FROM cursorDiskKV
 		WHERE key >= 'composerData:' AND key < 'composerData;'
+		  AND json_extract(value, '$.subagentInfo') IS NULL
 	`)
 	if err != nil {
 		return nil, err
@@ -265,7 +274,7 @@ func queryComposers(db *sql.DB) ([]composerSummary, error) {
 	}
 	var result []composerSummary
 	var chunked []chunkedComposer
-	cutoffMs := time.Now().Add(-recentWindow).UnixMilli()
+	cutoffMs := time.Now().Add(-RecentWindow).UnixMilli()
 	for rows.Next() {
 		var c composerSummary
 		var lastBubble, name *string
@@ -449,7 +458,7 @@ func buildStateSession(db *sql.DB, sid string, session *model.Session) error {
 			session.UserMessages++
 			if bubble.Text != "" {
 				recentMessages = append(recentMessages, model.ConversationMessage{
-					Role: "user", Text: model.Truncate(bubble.Text, 300), Timestamp: ts,
+					Role: "user", Text: model.Truncate(bubble.Text, model.MessageChars), Timestamp: ts,
 				})
 			}
 		case 2: // assistant / tool result
@@ -460,7 +469,7 @@ func buildStateSession(db *sql.DB, sid string, session *model.Session) error {
 			} else if bubble.Text != "" {
 				session.AssistantMessages++
 				recentMessages = append(recentMessages, model.ConversationMessage{
-					Role: "assistant", Text: model.Truncate(bubble.Text, 300), Timestamp: ts,
+					Role: "assistant", Text: model.Truncate(bubble.Text, model.MessageChars), Timestamp: ts,
 				})
 			}
 		}
@@ -585,6 +594,21 @@ func inferWorkspace(paths []string) string {
 		return root
 	}
 	return result
+}
+
+// gitBranch returns the branch checked out at path, or "" when path is not a
+// git checkout or HEAD is detached. Cursor does not record a branch, so this
+// reads it from the working directory the chat ran in (a worktree has its own).
+// A git that does not answer within claude.GitTimeout gives "".
+func gitBranch(path string) string {
+	branch, err := claude.GitRevParse(path, "--abbrev-ref", "HEAD")
+	if err != nil {
+		return ""
+	}
+	if branch == "HEAD" {
+		return ""
+	}
+	return branch
 }
 
 // findProjectRoot walks up from a path looking for a project root.

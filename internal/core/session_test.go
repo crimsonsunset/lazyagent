@@ -147,6 +147,35 @@ func TestFilterSessionsLocked_HidesEmptyGrokAndKimiSessions(t *testing.T) {
 	check("QuerySessions", mgr.QuerySessions("", "")) // HTTP API
 }
 
+func TestQueryAllSessions_IgnoresWindowButNotSubagentsOrExclusions(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	now := time.Now()
+	provider := fakeProvider{
+		sessions: []*model.Session{
+			{SessionID: "fresh", CWD: "/home/user/project", LastActivity: now},
+			{SessionID: "old", CWD: "/home/user/project", LastActivity: now.Add(-72 * time.Hour)},
+			{SessionID: "sub", CWD: "/home/user/project", LastActivity: now, IsSidechain: true},
+			{SessionID: "excluded", CWD: "/home/user/.claude-mem/observer-sessions/abc", LastActivity: now},
+		},
+	}
+
+	mgr := NewSessionManager(30, provider)
+	mgr.SetExcludeCWDSubstrings([]string{".claude-mem/observer-sessions"})
+	if err := mgr.Reload(); err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+
+	got := sessionIDSet(mgr.QueryAllSessions())
+	want := map[string]bool{"fresh": true, "old": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("QueryAllSessions() = %v, want %v", got, want)
+	}
+	if visible := sessionIDSet(mgr.QuerySessions("", "")); !reflect.DeepEqual(visible, map[string]bool{"fresh": true}) {
+		t.Errorf("QuerySessions() = %v, want only the in-window session", visible)
+	}
+}
+
 func TestFilterSessionsLocked_NoExcludePatterns(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 

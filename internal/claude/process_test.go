@@ -3,6 +3,7 @@ package claude
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -660,5 +661,26 @@ func TestDiscoverSessionsFiltered_EquivalentToManualFilterOfFullDiscovery(t *tes
 				t.Fatalf("filtered discovery = %v, want %v (must equal manual filter of full discovery)", gotPaths, want)
 			}
 		})
+	}
+}
+
+func TestGitRevParse_IgnoresUserGitConfig(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[broken\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+
+	repo := t.TempDir()
+	initCmd := exec.Command("git", "init", "-q", repo)
+	initCmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+
+	got, err := GitRevParse(repo, "--git-dir")
+	if err != nil || got != ".git" {
+		t.Errorf("GitRevParse = %q, %v; want .git with a broken ~/.gitconfig in place", got, err)
 	}
 }
