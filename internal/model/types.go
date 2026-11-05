@@ -44,7 +44,7 @@ type ToolCall struct {
 // ConversationMessage holds a single human-readable message from the conversation.
 type ConversationMessage struct {
 	Role      string // "user" or "assistant"
-	Text      string // first text block, truncated to 300 chars
+	Text      string // first text block, truncated to MessageChars (Claude keeps 300)
 	Timestamp time.Time
 }
 
@@ -202,6 +202,10 @@ func (c *SessionCache) Prune(seen map[string]struct{}) {
 	}
 	c.mu.Unlock()
 }
+
+// MessageChars is how much of a Cursor chat message is kept. It sits under
+// Slack's 3,000 character text block so a Home tab modal can show one whole.
+const MessageChars = 2900
 
 // Truncate returns the first n runes of s, or s unchanged if shorter.
 func Truncate(s string, n int) string {

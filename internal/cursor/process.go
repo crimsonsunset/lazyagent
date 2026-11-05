@@ -458,7 +458,7 @@ func buildStateSession(db *sql.DB, sid string, session *model.Session) error {
 			session.UserMessages++
 			if bubble.Text != "" {
 				recentMessages = append(recentMessages, model.ConversationMessage{
-					Role: "user", Text: model.Truncate(bubble.Text, 300), Timestamp: ts,
+					Role: "user", Text: model.Truncate(bubble.Text, model.MessageChars), Timestamp: ts,
 				})
 			}
 		case 2: // assistant / tool result
@@ -469,7 +469,7 @@ func buildStateSession(db *sql.DB, sid string, session *model.Session) error {
 			} else if bubble.Text != "" {
 				session.AssistantMessages++
 				recentMessages = append(recentMessages, model.ConversationMessage{
-					Role: "assistant", Text: model.Truncate(bubble.Text, 300), Timestamp: ts,
+					Role: "assistant", Text: model.Truncate(bubble.Text, model.MessageChars), Timestamp: ts,
 				})
 			}
 		}
