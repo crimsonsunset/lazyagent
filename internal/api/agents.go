@@ -62,6 +62,7 @@ type cloudAgents struct {
 	mu         sync.Mutex
 	cached     []AgentItem
 	cachedErr  error
+	lastGood   [][]AgentItem // per account, indexed like apiKeys
 	fetched    time.Time
 	refreshing bool
 }
@@ -105,22 +106,40 @@ func (c *cloudAgents) list() ([]AgentItem, error) {
 	return c.cached, c.cachedErr
 }
 
-// refresh refetches every account and replaces the cache.
+// refresh refetches every account and updates the cache.
 func (c *cloudAgents) refresh() {
-	items, err := c.fetchAll()
+	results, errs := c.fetchAll()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.store(items, err)
+	c.store(results, errs)
 	c.refreshing = false
 }
 
-// store replaces the cache. Callers hold c.mu.
-func (c *cloudAgents) store(items []AgentItem, err error) {
-	c.cached, c.cachedErr, c.fetched = items, err, time.Now()
+// store updates the cache from one fetch per account. An account that failed
+// keeps its last good agents, so a flaky refresh doesn't make them vanish; the
+// failure is still reported in cachedErr. Callers hold c.mu.
+func (c *cloudAgents) store(results [][]AgentItem, errs []error) {
+	if c.lastGood == nil {
+		c.lastGood = make([][]AgentItem, len(c.apiKeys))
+	}
+	var items []AgentItem
+	var failures []string
+	for i := range c.apiKeys {
+		if errs[i] != nil {
+			failures = append(failures, fmt.Sprintf("account %d: %v", i+1, errs[i]))
+		} else {
+			c.lastGood[i] = results[i]
+		}
+		items = append(items, c.lastGood[i]...)
+	}
+	c.cached, c.cachedErr, c.fetched = items, nil, time.Now()
+	if len(failures) > 0 {
+		c.cachedErr = errors.New(strings.Join(failures, "; "))
+	}
 }
 
-// fetchAll lists every account in parallel and joins the results in key order.
-func (c *cloudAgents) fetchAll() ([]AgentItem, error) {
+// fetchAll lists every account in parallel, returning results and errors in key order.
+func (c *cloudAgents) fetchAll() ([][]AgentItem, []error) {
 	results := make([][]AgentItem, len(c.apiKeys))
 	errs := make([]error, len(c.apiKeys))
 	var wg sync.WaitGroup
@@ -132,20 +151,7 @@ func (c *cloudAgents) fetchAll() ([]AgentItem, error) {
 		}()
 	}
 	wg.Wait()
-
-	var items []AgentItem
-	var failures []string
-	for i := range c.apiKeys {
-		if errs[i] != nil {
-			failures = append(failures, fmt.Sprintf("account %d: %v", i+1, errs[i]))
-			continue
-		}
-		items = append(items, results[i]...)
-	}
-	if len(failures) > 0 {
-		return items, errors.New(strings.Join(failures, "; "))
-	}
-	return items, nil
+	return results, errs
 }
 
 // fetchAccount lists the cloud agents of one Cursor account.

@@ -31,6 +31,13 @@ type SessionCache struct {
 	lastWALSize  int64
 	// Cached composer summaries (cheap to re-fetch).
 	composers []composerSummary
+
+	// Git metadata, refreshed on its own schedule (see applyGitMeta).
+	worktrees     map[string]cachedWorktree
+	touchedByID   map[string][]string
+	touchedMtime  time.Time
+	touchedSize   int64
+	touchedLoaded bool
 }
 
 type cachedSession struct {
@@ -48,7 +55,11 @@ type composerSummary struct {
 
 // NewSessionCache creates an empty Cursor session cache.
 func NewSessionCache() *SessionCache {
-	return &SessionCache{entries: make(map[string]*cachedSession), cli: make(map[string]*cachedCLI)}
+	return &SessionCache{
+		entries:   make(map[string]*cachedSession),
+		cli:       make(map[string]*cachedCLI),
+		worktrees: make(map[string]cachedWorktree),
+	}
 }
 
 // StateDBDir returns the directory containing state.vscdb for WatchDirs.
@@ -89,7 +100,7 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	cache.mu.Unlock()
 
 	if noChange {
-		return cachedResults(cache), nil
+		return applyGitMeta(cache, cachedResults(cache)), nil
 	}
 
 	db, err := sql.Open("sqlite", dbPath+"?mode=ro")
@@ -107,8 +118,6 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	// Step 2: For each composer, get last bubble timestamp and filter to recent.
 	cutoff := time.Now().Add(-RecentWindow)
 
-	wtCache := make(map[string]worktreeInfo)
-	touched := touchedBranches()
 	var sessions []*model.Session
 	hasPartialRead := false
 
@@ -154,18 +163,6 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 			session.TotalMessages = c.count
 		}
 
-		// Git worktree detection.
-		if session.CWD != "" {
-			if _, ok := wtCache[session.CWD]; !ok {
-				wtCache[session.CWD] = lookupWorktree(session.CWD)
-			}
-			wt := wtCache[session.CWD]
-			session.IsWorktree = wt.isWorktree
-			session.MainRepo = wt.mainRepo
-			session.GitBranch = wt.branch
-		}
-		session.TouchedBranches = otherBranches(touched[c.sid], session.GitBranch)
-
 		sessions = append(sessions, session)
 
 		if buildErr != nil {
@@ -199,7 +196,7 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	cache.composers = composers
 	cache.mu.Unlock()
 
-	return sessions, nil
+	return applyGitMeta(cache, sessions), nil
 }
 
 func cachedResults(cache *SessionCache) []*model.Session {

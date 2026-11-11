@@ -1,8 +1,10 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,14 +38,19 @@ func TestCloudListServesStaleWhileRefreshing(t *testing.T) {
 	var calls atomic.Int32
 	var isRefresh atomic.Bool
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHandlers := func() { releaseOnce.Do(func() { close(release) }) }
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
+		name := "run"
 		if isRefresh.Load() {
 			<-release
+			name = "refreshed"
 		}
-		w.Write([]byte(`{"items":[{"id":"bc-1","name":"run","status":"ACTIVE","updatedAt":"2026-11-03T20:00:00Z","repos":[]}]}`))
+		fmt.Fprintf(w, `{"items":[{"id":"bc-1","name":%q,"status":"ACTIVE","updatedAt":"2026-11-03T20:00:00Z","repos":[]}]}`, name)
 	}))
-	defer upstream.Close()
+	t.Cleanup(upstream.Close)
+	t.Cleanup(releaseHandlers)
 
 	c := newCloudAgents(upstream.URL, "key-a,key-b", testCloudLimits)
 	first, err := c.list()
@@ -66,18 +73,63 @@ func TestCloudListServesStaleWhileRefreshing(t *testing.T) {
 		t.Fatalf("stale list = %d items, want the cached 2", len(stale))
 	}
 
-	close(release)
+	releaseHandlers()
+	waitForRefresh(t, c)
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("upstream calls = %d, want 4 (2 accounts, initial fetch plus exactly one refresh)", got)
+	}
+	fresh, err := c.list()
+	if err != nil || len(fresh) != 2 || fresh[0].Name != "refreshed" {
+		t.Fatalf("after refresh = %+v, err %v; want 2 refreshed items", fresh, err)
+	}
+}
+
+func TestCloudRefreshFailureKeepsLastGoodAgents(t *testing.T) {
+	var failB atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key, _, _ := r.BasicAuth()
+		if key == "key-b" && failB.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, `{"items":[{"id":%q,"name":"run","status":"ACTIVE","updatedAt":"2026-11-03T20:00:00Z","repos":[]}]}`, key)
+	}))
+	t.Cleanup(upstream.Close)
+
+	c := newCloudAgents(upstream.URL, "key-a,key-b", testCloudLimits)
+	if first, err := c.list(); err != nil || len(first) != 2 {
+		t.Fatalf("first list = %d items, err %v; want both accounts", len(first), err)
+	}
+
+	failB.Store(true)
+	c.mu.Lock()
+	c.fetched = time.Now().Add(-2 * c.ttl)
+	c.mu.Unlock()
+	c.list()
+	waitForRefresh(t, c)
+
+	got, err := c.list()
+	if err == nil {
+		t.Error("want the refresh error reported")
+	}
+	if len(got) != 2 {
+		t.Errorf("after failed refresh = %d items, want the last good 2", len(got))
+	}
+}
+
+// waitForRefresh blocks until c's background refresh finishes, failing the
+// test if it is still running after two seconds.
+func waitForRefresh(t *testing.T, c *cloudAgents) {
+	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		c.mu.Lock()
 		done := !c.refreshing
 		c.mu.Unlock()
 		if done {
-			break
+			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := calls.Load(); got != 4 {
-		t.Fatalf("upstream calls = %d, want 4 (2 accounts, initial fetch plus exactly one refresh)", got)
-	}
+	t.Fatal("background refresh did not finish within 2s")
 }

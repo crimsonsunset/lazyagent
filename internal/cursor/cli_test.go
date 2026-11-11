@@ -42,6 +42,32 @@ func TestDiscoverCLISessions(t *testing.T) {
 	}
 }
 
+func TestCLIBranchRefreshesWithoutNewMessage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-b", "main")
+	runGit(t, repo, "commit", "--allow-empty", "-m", "init")
+	writeCLIMeta(t, home, "s1", repo, time.Now(), true)
+
+	cache := NewSessionCache()
+	if got := DiscoverCLISessions(cache)[0].GitBranch; got != "main" {
+		t.Fatalf("first branch = %q, want main", got)
+	}
+
+	runGit(t, repo, "checkout", "-b", "feature/y")
+	cache.mu.Lock()
+	for cwd, wt := range cache.worktrees {
+		wt.at = time.Time{}
+		cache.worktrees[cwd] = wt
+	}
+	cache.mu.Unlock()
+
+	if got := DiscoverCLISessions(cache)[0].GitBranch; got != "feature/y" {
+		t.Errorf("branch after checkout = %q, want feature/y (meta.json unchanged)", got)
+	}
+}
+
 func TestOtherBranches(t *testing.T) {
 	got := otherBranches([]string{"main", "feat/a", "feat/b"}, "feat/a")
 	if want := []string{"main", "feat/b"}; !reflect.DeepEqual(got, want) {

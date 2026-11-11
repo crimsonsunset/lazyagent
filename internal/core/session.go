@@ -653,19 +653,27 @@ func excludeCWDPredicate(patterns []string) func(cwd string) bool {
 }
 
 // QueryAllSessions returns every discovered session regardless of the time
-// window, minus sub-agents and CWD exclusions. The slice is a copy, safe to use
-// while the manager keeps reloading.
+// window, minus sub-agents, CWD exclusions and never-used sessions. The slice
+// is a copy, safe to use while the manager keeps reloading.
 func (m *SessionManager) QueryAllSessions() []*model.Session {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var all []*model.Session
 	for _, s := range m.sessions {
-		if s.IsSidechain || excludedByCWD(s.CWD, m.excludeCWDSubstrings) {
+		if s.IsSidechain || excludedByCWD(s.CWD, m.excludeCWDSubstrings) || isNeverUsed(s) {
 			continue
 		}
 		all = append(all, s)
 	}
 	return all
+}
+
+// isNeverUsed reports whether s is a Grok or Kimi session with no messages yet.
+// Both CLIs create a session directory the moment they launch, before any
+// message is sent. Such sessions are hidden from lists but still returned by
+// the provider, so `prune` and `compact` can reach very old empty sessions.
+func isNeverUsed(s *model.Session) bool {
+	return (s.Agent == "grok" || s.Agent == "kimi") && s.UserMessages == 0
 }
 
 // filterSessionsLocked applies time window, activity, and search filters.
@@ -687,11 +695,7 @@ func (m *SessionManager) filterSessionsLocked(search string, filter ActivityKind
 		if s.IsSidechain || !s.LastActivity.After(cutoff) {
 			continue
 		}
-		// Grok and Kimi both create a session directory the moment the CLI is
-		// launched, before any message is sent. Hide such never-used sessions
-		// from the list. They are still returned by the provider, so `prune`
-		// and `compact` can reach very old empty sessions.
-		if (s.Agent == "grok" || s.Agent == "kimi") && s.UserMessages == 0 {
+		if isNeverUsed(s) {
 			continue
 		}
 		if filter != "" && m.tracker.Get(s.SessionID) != filter {

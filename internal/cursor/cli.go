@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,10 +35,96 @@ type worktreeInfo struct {
 	branch     string
 }
 
+// gitMetaTTL is how long a working directory's git state is reused before git
+// is asked again. ponytail: a checkout switch shows up within this window, not
+// instantly; watch .git/HEAD if that ever matters.
+const gitMetaTTL = 30 * time.Second
+
+// cachedWorktree is a working directory's git state and when it was read.
+type cachedWorktree struct {
+	info worktreeInfo
+	at   time.Time
+}
+
 // lookupWorktree reads worktree and branch state for a working directory.
 func lookupWorktree(cwd string) worktreeInfo {
 	isWT, mainRepo := claude.IsWorktree(cwd)
 	return worktreeInfo{isWorktree: isWT, mainRepo: mainRepo, branch: gitBranch(cwd)}
+}
+
+// worktree returns cwd's git state, asking git at most once per gitMetaTTL.
+func (c *SessionCache) worktree(cwd string) worktreeInfo {
+	c.mu.Lock()
+	cached, ok := c.worktrees[cwd]
+	c.mu.Unlock()
+	if ok && time.Since(cached.at) < gitMetaTTL {
+		return cached.info
+	}
+	info := lookupWorktree(cwd)
+	c.mu.Lock()
+	c.worktrees[cwd] = cachedWorktree{info: info, at: time.Now()}
+	c.mu.Unlock()
+	return info
+}
+
+// touched returns touchedBranches, re-reading conversation-search.db only when
+// its WAL (or the db itself) has changed since the last read.
+func (c *SessionCache) touched() map[string][]string {
+	var mtime time.Time
+	var size int64
+	if path := searchDBPath(); path != "" {
+		mtime, size = walStats(path)
+	}
+	c.mu.Lock()
+	isFresh := c.touchedLoaded && mtime.Equal(c.touchedMtime) && size == c.touchedSize
+	cached := c.touchedByID
+	c.mu.Unlock()
+	if isFresh {
+		return cached
+	}
+	result := touchedBranches()
+	c.mu.Lock()
+	c.touchedByID, c.touchedMtime, c.touchedSize, c.touchedLoaded = result, mtime, size, true
+	c.mu.Unlock()
+	return result
+}
+
+// applyGitMeta sets each session's branch, worktree and touched branches from
+// git and conversation-search.db, independently of the chat caches, so a
+// checkout switch or a new touched branch shows up without a new message.
+// Changed sessions are replaced by updated copies (also stored back in the
+// cache), never mutated, since the manager may hold the old pointers.
+func applyGitMeta(cache *SessionCache, sessions []*model.Session) []*model.Session {
+	touched := cache.touched()
+	for i, s := range sessions {
+		var wt worktreeInfo
+		if s.CWD != "" {
+			wt = cache.worktree(s.CWD)
+		}
+		others := otherBranches(touched[s.SessionID], wt.branch)
+		isUnchanged := s.GitBranch == wt.branch && s.IsWorktree == wt.isWorktree &&
+			s.MainRepo == wt.mainRepo && slices.Equal(s.TouchedBranches, others)
+		if isUnchanged {
+			continue
+		}
+		clone := *s
+		clone.GitBranch, clone.IsWorktree, clone.MainRepo, clone.TouchedBranches = wt.branch, wt.isWorktree, wt.mainRepo, others
+		sessions[i] = &clone
+		cache.replace(&clone)
+	}
+	return sessions
+}
+
+// replace swaps the cached copy of s (IDE or CLI) for s, if one is cached.
+func (c *SessionCache) replace(s *model.Session) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.entries[s.SessionID]; ok {
+		entry.session = s
+	}
+	if entry, ok := c.cli[s.SessionID]; ok {
+		entry.session = s
+	}
 }
 
 // DiscoverCLISessions lists Cursor CLI sessions updated inside RecentWindow.
@@ -74,15 +161,11 @@ func DiscoverCLISessions(cache *SessionCache) []*model.Session {
 			continue
 		}
 
-		wt := lookupWorktree(meta.CWD)
 		session := &model.Session{
 			SessionID:    sid,
 			Agent:        "cursor",
 			CLI:          true,
 			CWD:          meta.CWD,
-			GitBranch:    wt.branch,
-			IsWorktree:   wt.isWorktree,
-			MainRepo:     wt.mainRepo,
 			Status:       model.StatusThinking,
 			LastActivity: time.UnixMilli(meta.UpdatedAtMs),
 		}
@@ -99,7 +182,7 @@ func DiscoverCLISessions(cache *SessionCache) []*model.Session {
 		}
 	}
 	cache.mu.Unlock()
-	return sessions
+	return applyGitMeta(cache, sessions)
 }
 
 // touchedBranches maps a local chat id to the branches it worked on, read from

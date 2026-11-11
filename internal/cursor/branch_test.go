@@ -1,14 +1,18 @@
 package cursor
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 )
 
+// runGit runs git in dir for a test fixture, isolated from the user's global
+// and system git config (e.g. commit signing).
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
