@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/illegalstudio/lazyagent/internal/apiauth"
+	"github.com/illegalstudio/lazyagent/internal/claude"
+	"github.com/illegalstudio/lazyagent/internal/cursor"
 )
 
 // TUIConfig holds TUI-specific settings.
@@ -138,6 +140,24 @@ func (c Config) ValidWebhooks() []WebhookConfig {
 	return out
 }
 
+// DiscoveryConfig bounds how much session history lazyagent reads.
+type DiscoveryConfig struct {
+	// RecentDays is how far back Cursor chats and CLI sessions are listed.
+	RecentDays int `json:"recent_days"`
+	// GitTimeoutSec bounds each git call made to read a branch or worktree.
+	GitTimeoutSec int `json:"git_timeout_sec"`
+}
+
+// CloudConfig bounds how /api/agents reads Cursor cloud agents.
+type CloudConfig struct {
+	// CacheTTLSec is how long a cloud agent list is served before a background refresh.
+	CacheTTLSec int `json:"cache_ttl_sec"`
+	// FetchTimeoutSec bounds one Cursor API call (one per account).
+	FetchTimeoutSec int `json:"fetch_timeout_sec"`
+	// PageLimit is the most cloud agents read per account.
+	PageLimit int `json:"page_limit"`
+}
+
 // Config holds application settings shared by TUI and GUI.
 type Config struct {
 	WindowMinutes        int             `json:"window_minutes"`
@@ -149,6 +169,8 @@ type Config struct {
 	Agents               map[string]bool `json:"agents"`
 	ClaudeDirs           []string        `json:"claude_dirs,omitempty"`
 	ExcludeCWDSubstrings []string        `json:"exclude_cwd_substrings"`
+	Discovery            DiscoveryConfig `json:"discovery"`
+	Cloud                CloudConfig     `json:"cloud"`
 	TUI                  TUIConfig       `json:"tui"`
 	CardDensity          string          `json:"card_density,omitempty"`
 	// DetailWidth is the GUI desktop-mode detail panel width in pixels.
@@ -190,8 +212,34 @@ func DefaultConfig() Config {
 			"kimi":     true,
 		},
 		ExcludeCWDSubstrings: []string{},
+		Discovery:            DiscoveryConfig{RecentDays: 30, GitTimeoutSec: 3},
+		Cloud:                CloudConfig{CacheTTLSec: 30, FetchTimeoutSec: 10, PageLimit: 100},
 		TUI:                  TUIConfig{Theme: "auto"},
 	}
+}
+
+// normalizeLimits puts the default back on any discovery or cloud limit that
+// is zero or negative, so a typo cannot turn a bound off.
+func normalizeLimits(cfg *Config) {
+	defaults := DefaultConfig()
+	for _, limit := range []struct{ value, fallback *int }{
+		{&cfg.Discovery.RecentDays, &defaults.Discovery.RecentDays},
+		{&cfg.Discovery.GitTimeoutSec, &defaults.Discovery.GitTimeoutSec},
+		{&cfg.Cloud.CacheTTLSec, &defaults.Cloud.CacheTTLSec},
+		{&cfg.Cloud.FetchTimeoutSec, &defaults.Cloud.FetchTimeoutSec},
+		{&cfg.Cloud.PageLimit, &defaults.Cloud.PageLimit},
+	} {
+		if *limit.value <= 0 {
+			*limit.value = *limit.fallback
+		}
+	}
+}
+
+// ApplyDiscovery pushes the discovery limits into the packages that read
+// sessions. Call it once at startup, before discovery runs.
+func ApplyDiscovery(cfg Config) {
+	cursor.RecentWindow = time.Duration(cfg.Discovery.RecentDays) * 24 * time.Hour
+	claude.GitTimeout = time.Duration(cfg.Discovery.GitTimeoutSec) * time.Second
 }
 
 // AgentEnabled returns whether an agent is enabled in config.
@@ -251,6 +299,14 @@ func readConfig() (cfg Config, needsSave bool) {
 	_ = json.Unmarshal(data, &cfg)
 
 	changed := ensureAPISalt(&cfg)
+	var keys map[string]json.RawMessage
+	_ = json.Unmarshal(data, &keys)
+	for _, key := range []string{"discovery", "cloud"} {
+		if _, ok := keys[key]; !ok {
+			changed = true
+		}
+	}
+	normalizeLimits(&cfg)
 	defaults := DefaultConfig()
 	if cfg.Agents == nil {
 		cfg.Agents = defaults.Agents

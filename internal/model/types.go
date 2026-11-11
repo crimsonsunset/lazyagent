@@ -44,7 +44,7 @@ type ToolCall struct {
 // ConversationMessage holds a single human-readable message from the conversation.
 type ConversationMessage struct {
 	Role      string // "user" or "assistant"
-	Text      string // first text block, truncated to 300 chars
+	Text      string // first text block, truncated to MessageChars (Claude keeps 300)
 	Timestamp time.Time
 }
 
@@ -60,6 +60,10 @@ type Session struct {
 	Model       string // model being used
 	GitBranch   string
 	IsSidechain bool // true = sub-agent spawned by another session
+	CLI         bool // true = Cursor CLI (cursor-agent) session rather than an IDE chat
+
+	// TouchedBranches are the other branches the chat worked on (Cursor IDE only).
+	TouchedBranches []string
 
 	// Git / worktree
 	IsWorktree bool
@@ -198,6 +202,10 @@ func (c *SessionCache) Prune(seen map[string]struct{}) {
 	}
 	c.mu.Unlock()
 }
+
+// MessageChars is how much of a Cursor chat message is kept. It sits under
+// Slack's 3,000 character text block so a Home tab modal can show one whole.
+const MessageChars = 2900
 
 // Truncate returns the first n runes of s, or s unchanged if shorter.
 func Truncate(s string, n int) string {

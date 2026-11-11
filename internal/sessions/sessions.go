@@ -66,6 +66,7 @@ Flags:
 	}
 
 	cfg := core.LoadConfig()
+	core.ApplyDiscovery(cfg)
 	provider := core.BuildProvider(*agent, cfg)
 
 	// Persistence is advisory and best-effort: when the user cache
@@ -245,6 +246,7 @@ func openSession(s *model.Session, mode core.ResumeMode) int {
 // and returns a non-zero exit code for the caller to return.
 func discoverDirSessions(agentMode, dir string) ([]*model.Session, int) {
 	cfg := core.LoadConfig()
+	core.ApplyDiscovery(cfg)
 	provider := core.BuildProvider(agentMode, cfg)
 
 	cacheDir, hasCacheDir := ResolveCacheDir()
