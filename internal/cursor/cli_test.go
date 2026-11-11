@@ -57,9 +57,9 @@ func TestCLIBranchRefreshesWithoutNewMessage(t *testing.T) {
 
 	runGit(t, repo, "checkout", "-b", "feature/y")
 	cache.mu.Lock()
-	for cwd, wt := range cache.worktrees {
+	for cwd, wt := range cache.gitByCWD {
 		wt.at = time.Time{}
-		cache.worktrees[cwd] = wt
+		cache.gitByCWD[cwd] = wt
 	}
 	cache.mu.Unlock()
 

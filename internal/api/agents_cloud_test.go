@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,12 +39,14 @@ func TestCloudListServesStaleWhileRefreshing(t *testing.T) {
 	var calls atomic.Int32
 	var isRefresh atomic.Bool
 	release := make(chan struct{})
+	refreshStarted := make(chan struct{}, 2)
 	var releaseOnce sync.Once
 	releaseHandlers := func() { releaseOnce.Do(func() { close(release) }) }
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		name := "run"
 		if isRefresh.Load() {
+			refreshStarted <- struct{}{}
 			<-release
 			name = "refreshed"
 		}
@@ -65,7 +68,14 @@ func TestCloudListServesStaleWhileRefreshing(t *testing.T) {
 
 	started := time.Now()
 	stale, _ := c.list()
-	c.list()
+	select {
+	case <-refreshStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background refresh never reached upstream")
+	}
+	if again, _ := c.list(); len(again) != 2 || again[0].Name != "run" {
+		t.Fatalf("list during refresh = %+v, want the cached 2", again)
+	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("stale list blocked %v on the upstream refresh", elapsed)
 	}
@@ -112,8 +122,12 @@ func TestCloudRefreshFailureKeepsLastGoodAgents(t *testing.T) {
 	if err == nil {
 		t.Error("want the refresh error reported")
 	}
-	if len(got) != 2 {
-		t.Errorf("after failed refresh = %d items, want the last good 2", len(got))
+	ids := make([]string, 0, len(got))
+	for _, a := range got {
+		ids = append(ids, a.ID)
+	}
+	if !slices.Equal(ids, []string{"key-a", "key-b"}) {
+		t.Errorf("after failed refresh ids = %v, want key-a and key-b's last good agent", ids)
 	}
 }
 

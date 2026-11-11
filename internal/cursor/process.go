@@ -33,7 +33,7 @@ type SessionCache struct {
 	composers []composerSummary
 
 	// Git metadata, refreshed on its own schedule (see applyGitMeta).
-	worktrees     map[string]cachedWorktree
+	gitByCWD      map[string]cachedWorktree
 	touchedByID   map[string][]string
 	touchedMtime  time.Time
 	touchedSize   int64
@@ -56,9 +56,9 @@ type composerSummary struct {
 // NewSessionCache creates an empty Cursor session cache.
 func NewSessionCache() *SessionCache {
 	return &SessionCache{
-		entries:   make(map[string]*cachedSession),
-		cli:       make(map[string]*cachedCLI),
-		worktrees: make(map[string]cachedWorktree),
+		entries:  make(map[string]*cachedSession),
+		cli:      make(map[string]*cachedCLI),
+		gitByCWD: make(map[string]cachedWorktree),
 	}
 }
 

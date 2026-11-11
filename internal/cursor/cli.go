@@ -3,10 +3,13 @@ package cursor
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/illegalstudio/lazyagent/internal/claude"
@@ -52,23 +55,52 @@ func lookupWorktree(cwd string) worktreeInfo {
 	return worktreeInfo{isWorktree: isWT, mainRepo: mainRepo, branch: gitBranch(cwd)}
 }
 
-// worktree returns cwd's git state, asking git at most once per gitMetaTTL.
-func (c *SessionCache) worktree(cwd string) worktreeInfo {
+// maxGitLookups caps concurrent git lookups, so a pass with many stale
+// directories costs about one GitTimeout per batch instead of one per directory.
+const maxGitLookups = 8
+
+// worktrees returns the git state of every cwd, asking git again only for
+// directories not looked up within gitMetaTTL, in parallel.
+func (c *SessionCache) worktrees(cwds []string) map[string]worktreeInfo {
+	result := make(map[string]worktreeInfo, len(cwds))
+	var stale []string
 	c.mu.Lock()
-	cached, ok := c.worktrees[cwd]
-	c.mu.Unlock()
-	if ok && time.Since(cached.at) < gitMetaTTL {
-		return cached.info
+	for _, cwd := range cwds {
+		cached, ok := c.gitByCWD[cwd]
+		if ok && time.Since(cached.at) < gitMetaTTL {
+			result[cwd] = cached.info
+		} else if !slices.Contains(stale, cwd) {
+			stale = append(stale, cwd)
+		}
 	}
-	info := lookupWorktree(cwd)
-	c.mu.Lock()
-	c.worktrees[cwd] = cachedWorktree{info: info, at: time.Now()}
 	c.mu.Unlock()
-	return info
+
+	infos := make([]worktreeInfo, len(stale))
+	slots := make(chan struct{}, maxGitLookups)
+	var wg sync.WaitGroup
+	for i, cwd := range stale {
+		wg.Add(1)
+		slots <- struct{}{}
+		go func() {
+			defer func() { <-slots; wg.Done() }()
+			infos[i] = lookupWorktree(cwd)
+		}()
+	}
+	wg.Wait()
+
+	now := time.Now()
+	c.mu.Lock()
+	for i, cwd := range stale {
+		c.gitByCWD[cwd] = cachedWorktree{info: infos[i], at: now}
+		result[cwd] = infos[i]
+	}
+	c.mu.Unlock()
+	return result
 }
 
 // touched returns touchedBranches, re-reading conversation-search.db only when
-// its WAL (or the db itself) has changed since the last read.
+// its WAL (or the db itself) has changed since the last good read. A failed
+// read keeps the last good map and is retried on the next call.
 func (c *SessionCache) touched() map[string][]string {
 	var mtime time.Time
 	var size int64
@@ -82,7 +114,10 @@ func (c *SessionCache) touched() map[string][]string {
 	if isFresh {
 		return cached
 	}
-	result := touchedBranches()
+	result, err := touchedBranches()
+	if err != nil {
+		return cached
+	}
 	c.mu.Lock()
 	c.touchedByID, c.touchedMtime, c.touchedSize, c.touchedLoaded = result, mtime, size, true
 	c.mu.Unlock()
@@ -96,11 +131,15 @@ func (c *SessionCache) touched() map[string][]string {
 // cache), never mutated, since the manager may hold the old pointers.
 func applyGitMeta(cache *SessionCache, sessions []*model.Session) []*model.Session {
 	touched := cache.touched()
-	for i, s := range sessions {
-		var wt worktreeInfo
+	var cwds []string
+	for _, s := range sessions {
 		if s.CWD != "" {
-			wt = cache.worktree(s.CWD)
+			cwds = append(cwds, s.CWD)
 		}
+	}
+	git := cache.worktrees(cwds)
+	for i, s := range sessions {
+		wt := git[s.CWD]
 		others := otherBranches(touched[s.SessionID], wt.branch)
 		isUnchanged := s.GitBranch == wt.branch && s.IsWorktree == wt.isWorktree &&
 			s.MainRepo == wt.mainRepo && slices.Equal(s.TouchedBranches, others)
@@ -186,24 +225,24 @@ func DiscoverCLISessions(cache *SessionCache) []*model.Session {
 }
 
 // touchedBranches maps a local chat id to the branches it worked on, read from
-// Cursor's conversation-search.db. It returns nil when that database is missing
-// or unreadable, so the extra column is lost but nothing else is.
-func touchedBranches() map[string][]string {
+// Cursor's conversation-search.db. A missing database is a valid empty result;
+// an unreadable one returns an error so the caller can keep its last good map.
+func touchedBranches() (map[string][]string, error) {
 	path := searchDBPath()
 	if path == "" {
-		return nil
+		return nil, nil
 	}
-	if _, err := os.Stat(path); err != nil {
-		return nil
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
 	}
 	db, err := sql.Open("sqlite", path+"?mode=ro")
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer db.Close()
 	rows, err := db.Query("SELECT id, branches FROM conversations WHERE source = 'local' AND branches != ''")
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -215,7 +254,7 @@ func touchedBranches() map[string][]string {
 		}
 		result[id] = strings.Fields(branches)
 	}
-	return result
+	return result, rows.Err()
 }
 
 // otherBranches drops the checked-out branch from a chat's touched branches.
