@@ -15,6 +15,7 @@ import (
 
 var testCloudLimits = core.DefaultConfig().Cloud
 
+// TestCloudLimitsComeFromConfig checks the cache TTL, fetch timeout and page limit come from config.json "cloud".
 func TestCloudLimitsComeFromConfig(t *testing.T) {
 	var query atomic.Value
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +36,7 @@ func TestCloudLimitsComeFromConfig(t *testing.T) {
 	}
 }
 
+// TestCloudListServesStaleWhileRefreshing checks a stale cache is served without blocking while exactly one background refresh runs.
 func TestCloudListServesStaleWhileRefreshing(t *testing.T) {
 	var calls atomic.Int32
 	var isRefresh atomic.Bool
@@ -66,18 +68,14 @@ func TestCloudListServesStaleWhileRefreshing(t *testing.T) {
 	c.fetched = time.Now().Add(-2 * c.ttl)
 	c.mu.Unlock()
 
-	started := time.Now()
-	stale, _ := c.list()
+	stale := timedList(t, c)
 	select {
 	case <-refreshStarted:
 	case <-time.After(2 * time.Second):
 		t.Fatal("background refresh never reached upstream")
 	}
-	if again, _ := c.list(); len(again) != 2 || again[0].Name != "run" {
+	if again := timedList(t, c); len(again) != 2 || again[0].Name != "run" {
 		t.Fatalf("list during refresh = %+v, want the cached 2", again)
-	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("stale list blocked %v on the upstream refresh", elapsed)
 	}
 	if len(stale) != 2 {
 		t.Fatalf("stale list = %d items, want the cached 2", len(stale))
@@ -94,6 +92,7 @@ func TestCloudListServesStaleWhileRefreshing(t *testing.T) {
 	}
 }
 
+// TestCloudRefreshFailureKeepsLastGoodAgents checks a failing account keeps its last good agents and reports the error.
 func TestCloudRefreshFailureKeepsLastGoodAgents(t *testing.T) {
 	var failB atomic.Bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +128,18 @@ func TestCloudRefreshFailureKeepsLastGoodAgents(t *testing.T) {
 	if !slices.Equal(ids, []string{"key-a", "key-b"}) {
 		t.Errorf("after failed refresh ids = %v, want key-a and key-b's last good agent", ids)
 	}
+}
+
+// timedList calls c.list and fails the test if that one call takes over a
+// second, i.e. it blocked on the upstream refresh instead of serving cache.
+func timedList(t *testing.T, c *cloudAgents) []AgentItem {
+	t.Helper()
+	started := time.Now()
+	items, _ := c.list()
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("stale list blocked %v on the upstream refresh", elapsed)
+	}
+	return items
 }
 
 // waitForRefresh blocks until c's background refresh finishes, failing the

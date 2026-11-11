@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// writeCLIMeta writes a Cursor CLI meta.json for sid under home.
 func writeCLIMeta(t *testing.T, home, sid, cwd string, updated time.Time, hasConversation bool) {
 	t.Helper()
 	dir := filepath.Join(home, ".cursor", "chats", "hash", sid)
@@ -21,6 +22,7 @@ func writeCLIMeta(t *testing.T, home, sid, cwd string, updated time.Time, hasCon
 	}
 }
 
+// TestDiscoverCLISessions checks only fresh CLI sessions with a conversation are listed, with their branch.
 func TestDiscoverCLISessions(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -42,6 +44,7 @@ func TestDiscoverCLISessions(t *testing.T) {
 	}
 }
 
+// TestCLIBranchRefreshesWithoutNewMessage checks a checkout switch reaches a cached CLI session once the git TTL lapses.
 func TestCLIBranchRefreshesWithoutNewMessage(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -68,6 +71,7 @@ func TestCLIBranchRefreshesWithoutNewMessage(t *testing.T) {
 	}
 }
 
+// TestOtherBranches checks the current branch is dropped from touched branches.
 func TestOtherBranches(t *testing.T) {
 	got := otherBranches([]string{"main", "feat/a", "feat/b"}, "feat/a")
 	if want := []string{"main", "feat/b"}; !reflect.DeepEqual(got, want) {

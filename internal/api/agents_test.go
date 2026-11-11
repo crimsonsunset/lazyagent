@@ -26,11 +26,13 @@ func fakeCursorAPI(t *testing.T, calls *int) *httptest.Server {
 	}))
 }
 
+// getAgents fetches GET /api/agents from base with the test token.
 func getAgents(t *testing.T, base string) AgentsResponse {
 	t.Helper()
 	return getAgentsAt(t, base+"/api/agents")
 }
 
+// getAgentsAt fetches url with the test token and decodes the AgentsResponse.
 func getAgentsAt(t *testing.T, url string) AgentsResponse {
 	t.Helper()
 	resp := authedGet(t, url)
@@ -45,6 +47,7 @@ func getAgentsAt(t *testing.T, url string) AgentsResponse {
 	return out
 }
 
+// TestGetAgentsMergesIDEAndCloud checks IDE and cloud agents are merged, idle ones only with ?all=true.
 func TestGetAgentsMergesIDEAndCloud(t *testing.T) {
 	now := time.Now()
 	srv, ts := newTestServerWithSessions(t, []*model.Session{
@@ -80,6 +83,7 @@ func TestGetAgentsMergesIDEAndCloud(t *testing.T) {
 	}
 }
 
+// TestGetAgentsCachesCloudCalls checks two requests inside the TTL make one upstream call.
 func TestGetAgentsCachesCloudCalls(t *testing.T) {
 	srv, ts := newTestServer(t)
 	defer ts.Close()
@@ -96,6 +100,7 @@ func TestGetAgentsCachesCloudCalls(t *testing.T) {
 	}
 }
 
+// TestGetAgentsReportsCloudErrorButKeepsIDE checks a cloud failure is reported and cached while IDE agents still return.
 func TestGetAgentsReportsCloudErrorButKeepsIDE(t *testing.T) {
 	srv, ts := newTestServer(t)
 	defer ts.Close()
@@ -112,6 +117,7 @@ func TestGetAgentsReportsCloudErrorButKeepsIDE(t *testing.T) {
 	}
 }
 
+// TestGetAgentsMergesAccountsAndSurvivesOneFailing checks agents from several accounts merge and one failing account doesn't hide the rest.
 func TestGetAgentsMergesAccountsAndSurvivesOneFailing(t *testing.T) {
 	srv, ts := newTestServer(t)
 	defer ts.Close()
@@ -139,6 +145,7 @@ func TestGetAgentsMergesAccountsAndSurvivesOneFailing(t *testing.T) {
 	}
 }
 
+// TestGetAgentsWithoutKeySkipsCloud checks no Cursor key means no cloud call and no error.
 func TestGetAgentsWithoutKeySkipsCloud(t *testing.T) {
 	_, ts := newTestServer(t)
 	defer ts.Close()
@@ -149,6 +156,7 @@ func TestGetAgentsWithoutKeySkipsCloud(t *testing.T) {
 	}
 }
 
+// TestAgentsRejectsMissingToken checks /api/agents requires the bearer token.
 func TestAgentsRejectsMissingToken(t *testing.T) {
 	_, ts := newTestServer(t)
 	defer ts.Close()

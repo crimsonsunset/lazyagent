@@ -20,6 +20,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// TestGitBranchFollowsWorktrees checks gitBranch per worktree, on detached HEAD, outside a repo and with a stray GIT_DIR.
 func TestGitBranchFollowsWorktrees(t *testing.T) {
 	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "elsewhere.git"))
 	main := t.TempDir()
