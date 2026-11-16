@@ -360,7 +360,7 @@ Cloud agents need `LAZYAGENT_CURSOR_API_KEY` in the server's environment: one Cu
 
 #### Push to a webhook
 
-Set `LAZYAGENT_HA_WEBHOOK_URL` (an `http(s)` URL) and the server POSTs the `?pinned=true` response there as JSON whenever it changes: an agent added or removed, renamed, a status change, a pin. `updated_at` alone does not count. Checks run on every session refresh (about every 3 seconds for Cursor). One send runs at a time with a 5 second timeout. A non-2xx or failed send is retried on the next check. Built for a Home Assistant webhook trigger, but any receiver works.
+Set `LAZYAGENT_HA_WEBHOOK_URL` (an `http(s)` URL) and the server POSTs the `?pinned=true` response there as JSON whenever it changes: an agent added or removed, renamed, a status change, a pin. `updated_at` alone does not count. Checks run on every session refresh (every second for Cursor). One send runs at a time with a 5 second timeout. A non-2xx or failed send is retried on the next check. Built for a Home Assistant webhook trigger, but any receiver works.
 
 ### `GET /api/stats`
 

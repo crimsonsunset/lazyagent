@@ -309,32 +309,40 @@ func TestBuildStateSessionPreservesPartialChunks(t *testing.T) {
 	}
 }
 
-// TestQueryRunningReadsUnfinishedRunAt checks only chats with unfinishedRunAt set count as running.
-func TestQueryRunningReadsUnfinishedRunAt(t *testing.T) {
+// TestQueryHeaderFlags checks unfinishedRunAt marks running and the pending-action/plan flags mark blocked.
+func TestQueryHeaderFlags(t *testing.T) {
 	db := newTestDB(t)
 	if _, err := db.Exec("CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, value TEXT)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO composerHeaders VALUES
 		('busy', '{"name":"busy","unfinishedRunAt":1794811464561}'),
-		('done', '{"name":"done"}')`); err != nil {
+		('asks', '{"name":"asks","hasBlockingPendingActions":true}'),
+		('plan', '{"name":"plan","hasPendingPlan":true,"hasBlockingPendingActions":false}'),
+		('done', '{"name":"done","hasBlockingPendingActions":false}')`); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := queryRunning(db)
+	got, err := queryHeaderFlags(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got["busy"] || got["done"] || len(got) != 1 {
-		t.Fatalf("queryRunning = %v, want only busy", got)
+	want := map[string]headerFlags{"busy": {running: true}, "asks": {blocked: true}, "plan": {blocked: true}}
+	if len(got) != len(want) {
+		t.Fatalf("queryHeaderFlags = %v, want %v", got, want)
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("%s = %+v, want %+v", id, got[id], w)
+		}
 	}
 }
 
 // TestQueryRunningWithoutHeadersTable checks an older Cursor DB reports nothing running.
 func TestQueryRunningWithoutHeadersTable(t *testing.T) {
-	got, err := queryRunning(newTestDB(t))
-	if err != nil || len(got) != 0 {
-		t.Fatalf("queryRunning = %v, %v, want empty and no error", got, err)
+	got, err := queryHeaderFlags(newTestDB(t))
+	if err != nil || got != nil {
+		t.Fatalf("queryHeaderFlags = %v, %v, want nil and no error", got, err)
 	}
 }
 
@@ -342,8 +350,8 @@ func TestQueryRunningWithoutHeadersTable(t *testing.T) {
 func TestQueryRunningReportsReadFailure(t *testing.T) {
 	db := newTestDB(t)
 	db.Close()
-	if _, err := queryRunning(db); err == nil {
-		t.Fatal("queryRunning on a closed DB returned no error")
+	if _, err := queryHeaderFlags(db); err == nil {
+		t.Fatal("queryHeaderFlags on a closed DB returned no error")
 	}
 }
 

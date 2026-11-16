@@ -70,14 +70,21 @@ type ActivityEntry struct {
 // ResolveActivity determines the display activity for a session.
 //
 // Priority:
-//  1. Compacting (summary entry written recently).
-//  2. Most recent tool in RecentTools within ActivityTimeout.
-//  3. Running (the agent reports a turn in flight) → current tool or thinking.
-//  4. StatusWaitingForUser within WaitingTimeout (with grace period).
-//  5. LastActivity older than ActivityTimeout → idle.
-//  6. Current JSONL status → thinking if Claude is processing, idle otherwise.
+//  1. Blocked (Cursor says the chat waits on the user) → waiting, however old.
+//  2. Compacting (summary entry written recently).
+//  3. Most recent tool in RecentTools within ActivityTimeout.
+//  4. Running (the agent reports a turn in flight) → current tool or thinking.
+//  5. StatusWaitingForUser within WaitingTimeout (with grace period).
+//  6. LastActivity older than ActivityTimeout → idle.
+//  7. Current JSONL status → thinking if Claude is processing, idle otherwise.
 func ResolveActivity(s *model.Session, now time.Time) ActivityKind {
 	sinceActivity := now.Sub(s.LastActivity)
+
+	// Cursor's own "waits on you" flag (a question, approval or plan) beats the
+	// tool heuristics: the pending question is itself a recent tool call.
+	if s.Blocked {
+		return ActivityWaiting
+	}
 
 	if !s.LastSummaryAt.IsZero() && now.Sub(s.LastSummaryAt) < ActivityTimeout {
 		return ActivityCompacting
@@ -231,7 +238,7 @@ func (t *ActivityTracker) Update(sessions []*model.Session, now time.Time) {
 		activeIDs[id] = struct{}{}
 		activity := ResolveActivity(s, now)
 
-		if activity == ActivityWaiting {
+		if activity == ActivityWaiting && !s.Blocked {
 			if _, seen := t.waitingSince[id]; !seen {
 				t.waitingSince[id] = now
 			}

@@ -124,3 +124,33 @@ func TestResolveActivity_RunningOutlastsTimeout(t *testing.T) {
 		t.Fatalf("flag cleared: got %q, want %q", got, ActivityIdle)
 	}
 }
+
+// TestResolveActivity_BlockedWaitsOnUser checks a chat Cursor marks as waiting on the user
+// reads as waiting even with a fresh tool call (the pending question) and hours of quiet,
+// skips the grace period, and goes idle once the flag clears.
+func TestResolveActivity_BlockedWaitsOnUser(t *testing.T) {
+	now := time.Now()
+	s := &model.Session{
+		SessionID: "s1", Agent: "cursor", Blocked: true, Running: true,
+		LastActivity: now, RecentTools: []model.ToolCall{{Name: "ask_question", Timestamp: now}},
+	}
+	if got := ResolveActivity(s, now); got != ActivityWaiting {
+		t.Fatalf("blocked with a fresh tool: got %q, want %q", got, ActivityWaiting)
+	}
+
+	tracker := NewActivityTracker()
+	tracker.Update([]*model.Session{s}, now)
+	if got := tracker.Get("s1"); got != ActivityWaiting {
+		t.Fatalf("blocked should skip the waiting grace: got %q", got)
+	}
+
+	s.LastActivity, s.RecentTools, s.Running = now.Add(-3*time.Hour), nil, false
+	if got := ResolveActivity(s, now); got != ActivityWaiting {
+		t.Fatalf("blocked, quiet 3h: got %q, want %q", got, ActivityWaiting)
+	}
+
+	s.Blocked = false
+	if got := ResolveActivity(s, now); got != ActivityIdle {
+		t.Fatalf("flag cleared: got %q, want %q", got, ActivityIdle)
+	}
+}
