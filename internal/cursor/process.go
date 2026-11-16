@@ -134,12 +134,13 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 		// Check if we have a cached session with the same bubble count.
 		cache.mu.Lock()
 		if cached, ok := cache.entries[c.sid]; ok && cached.bubbleCount == c.count {
-			if cached.session.LastActivity.Equal(lastAt) {
+			if cached.session.LastActivity.Equal(lastAt) && cached.session.Name == c.name {
 				sessions = append(sessions, cached.session)
 			} else {
-				// Timestamp changed — clone to avoid mutating a pointer shared with the manager.
+				// Timestamp or rename changed — clone to avoid mutating a pointer shared with the manager.
 				clone := *cached.session
 				clone.LastActivity = lastAt
+				clone.Name = c.name
 				cached.session = &clone
 				sessions = append(sessions, &clone)
 			}
