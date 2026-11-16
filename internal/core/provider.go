@@ -187,12 +187,31 @@ func NewCursorProvider() *CursorProvider {
 	return &CursorProvider{cache: cursor.NewSessionCache()}
 }
 
+var _ CachePersister = (*CursorProvider)(nil)
+
 func (p *CursorProvider) DiscoverSessions() ([]*model.Session, error) {
 	return cursor.DiscoverSessions(p.cache)
 }
 
-func (p *CursorProvider) UseWatcher() bool               { return false }
-func (p *CursorProvider) RefreshInterval() time.Duration { return 3 * time.Second }
+// LoadCaches implements CachePersister. Without it every restart re-decodes
+// every recent chat's bubbles from state.vscdb (~760 MB, minutes) (#111).
+func (p *CursorProvider) LoadCaches(dir string) error {
+	return p.cache.LoadFrom(filepath.Join(dir, "discovery-cursor.json"))
+}
+
+// SaveCaches implements CachePersister.
+func (p *CursorProvider) SaveCaches(dir string) error {
+	if err := diskcache.EnsureDir(dir); err != nil {
+		return err
+	}
+	return p.cache.SaveTo(filepath.Join(dir, "discovery-cursor.json"))
+}
+
+func (p *CursorProvider) UseWatcher() bool { return false }
+
+// RefreshInterval is 1s so a chat change reaches the API within about a second
+// of the database write. A cycle with no change costs a WAL stat (#114).
+func (p *CursorProvider) RefreshInterval() time.Duration { return time.Second }
 func (p *CursorProvider) WatchDirs() []string {
 	if d := cursor.StateDBDir(); d != "" {
 		return []string{d}
