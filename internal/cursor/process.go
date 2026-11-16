@@ -175,6 +175,13 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 		cache.mu.Unlock()
 	}
 
+	running, runErr := queryRunning(db)
+	if runErr != nil {
+		hasPartialRead = true
+	} else {
+		sessions = applyRunning(cache, sessions, running)
+	}
+
 	// Prune stale cache entries not present in current results.
 	activeIDs := make(map[string]struct{}, len(sessions))
 	for _, s := range sessions {
@@ -196,27 +203,37 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	cache.composers = composers
 	cache.mu.Unlock()
 
-	return applyGitMeta(cache, applyRunning(cache, sessions, queryRunning(db))), nil
+	return applyGitMeta(cache, sessions), nil
 }
 
 // queryRunning returns the ids of IDE chats with a turn in flight: Cursor sets
 // unfinishedRunAt on the composer header when a run starts and clears it when
-// the run ends. Nil when the table is missing (older Cursor builds).
-func queryRunning(db *sql.DB) map[string]bool {
+// the run ends. Returns an empty map when the table is missing (older Cursor
+// builds) and an error when the read fails, so the caller can retry next poll.
+func queryRunning(db *sql.DB) (map[string]bool, error) {
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'composerHeaders'`).Scan(&tables); err != nil {
+		return nil, err
+	}
+	running := map[string]bool{}
+	if tables == 0 {
+		return running, nil
+	}
 	rows, err := db.Query(`SELECT composerId FROM composerHeaders
 		WHERE json_extract(value, '$.unfinishedRunAt') IS NOT NULL`)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
-	running := map[string]bool{}
 	for rows.Next() {
 		var sid string
-		if rows.Scan(&sid) == nil {
-			running[sid] = true
+		if err := rows.Scan(&sid); err != nil {
+			return nil, err
 		}
+		running[sid] = true
 	}
-	return running
+	return running, rows.Err()
 }
 
 // applyRunning sets Running from the run flags, cloning any session whose flag

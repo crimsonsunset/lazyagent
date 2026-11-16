@@ -246,7 +246,10 @@ func TestQueryRunningReadsUnfinishedRunAt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := queryRunning(db)
+	got, err := queryRunning(db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !got["busy"] || got["done"] || len(got) != 1 {
 		t.Fatalf("queryRunning = %v, want only busy", got)
 	}
@@ -254,7 +257,17 @@ func TestQueryRunningReadsUnfinishedRunAt(t *testing.T) {
 
 // TestQueryRunningWithoutHeadersTable checks an older Cursor DB reports nothing running.
 func TestQueryRunningWithoutHeadersTable(t *testing.T) {
-	if got := queryRunning(newTestDB(t)); len(got) != 0 {
-		t.Fatalf("queryRunning = %v, want empty", got)
+	got, err := queryRunning(newTestDB(t))
+	if err != nil || len(got) != 0 {
+		t.Fatalf("queryRunning = %v, %v, want empty and no error", got, err)
+	}
+}
+
+// TestQueryRunningReportsReadFailure checks a failed read errors instead of clearing every run flag.
+func TestQueryRunningReportsReadFailure(t *testing.T) {
+	db := newTestDB(t)
+	db.Close()
+	if _, err := queryRunning(db); err == nil {
+		t.Fatal("queryRunning on a closed DB returned no error")
 	}
 }
