@@ -196,7 +196,42 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	cache.composers = composers
 	cache.mu.Unlock()
 
-	return applyGitMeta(cache, sessions), nil
+	return applyGitMeta(cache, applyRunning(cache, sessions, queryRunning(db))), nil
+}
+
+// queryRunning returns the ids of IDE chats with a turn in flight: Cursor sets
+// unfinishedRunAt on the composer header when a run starts and clears it when
+// the run ends. Nil when the table is missing (older Cursor builds).
+func queryRunning(db *sql.DB) map[string]bool {
+	rows, err := db.Query(`SELECT composerId FROM composerHeaders
+		WHERE json_extract(value, '$.unfinishedRunAt') IS NOT NULL`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	running := map[string]bool{}
+	for rows.Next() {
+		var sid string
+		if rows.Scan(&sid) == nil {
+			running[sid] = true
+		}
+	}
+	return running
+}
+
+// applyRunning sets Running from the run flags, cloning any session whose flag
+// changed so a pointer shared with the manager is never mutated.
+func applyRunning(cache *SessionCache, sessions []*model.Session, running map[string]bool) []*model.Session {
+	for i, s := range sessions {
+		if s.Running == running[s.SessionID] {
+			continue
+		}
+		clone := *s
+		clone.Running = running[s.SessionID]
+		sessions[i] = &clone
+		cache.replace(&clone)
+	}
+	return sessions
 }
 
 func cachedResults(cache *SessionCache) []*model.Session {

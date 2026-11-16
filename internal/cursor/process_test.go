@@ -233,3 +233,28 @@ func TestBuildStateSessionPreservesPartialChunks(t *testing.T) {
 		})
 	}
 }
+
+// TestQueryRunningReadsUnfinishedRunAt checks only chats with unfinishedRunAt set count as running.
+func TestQueryRunningReadsUnfinishedRunAt(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, value TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO composerHeaders VALUES
+		('busy', '{"name":"busy","unfinishedRunAt":1794811464561}'),
+		('done', '{"name":"done"}')`); err != nil {
+		t.Fatal(err)
+	}
+
+	got := queryRunning(db)
+	if !got["busy"] || got["done"] || len(got) != 1 {
+		t.Fatalf("queryRunning = %v, want only busy", got)
+	}
+}
+
+// TestQueryRunningWithoutHeadersTable checks an older Cursor DB reports nothing running.
+func TestQueryRunningWithoutHeadersTable(t *testing.T) {
+	if got := queryRunning(newTestDB(t)); len(got) != 0 {
+		t.Fatalf("queryRunning = %v, want empty", got)
+	}
+}
