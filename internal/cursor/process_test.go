@@ -271,3 +271,28 @@ func TestQueryRunningReportsReadFailure(t *testing.T) {
 		t.Fatal("queryRunning on a closed DB returned no error")
 	}
 }
+
+// TestPinnedIDsAt checks the pinned list is read in order, and a missing DB or key reads as none.
+func TestPinnedIDsAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.vscdb")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pinnedIDsAt(path); got != nil {
+		t.Fatalf("no key: got %v, want nil", got)
+	}
+	if _, err := db.Exec(`INSERT INTO ItemTable VALUES ('cursor/pinnedComposers', '["b","a"]')`); err != nil {
+		t.Fatal(err)
+	}
+	if got := pinnedIDsAt(path); len(got) != 2 || got[0] != "b" || got[1] != "a" {
+		t.Fatalf("got %v, want [b a]", got)
+	}
+	if got := pinnedIDsAt(filepath.Join(t.TempDir(), "none.vscdb")); got != nil {
+		t.Fatalf("missing db: got %v, want nil", got)
+	}
+}

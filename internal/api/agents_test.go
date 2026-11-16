@@ -170,3 +170,22 @@ func TestAgentsRejectsMissingToken(t *testing.T) {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
 }
+
+// TestGetAgentsPinnedKeepsIdlePins checks ?pinned=true adds idle pinned chats, marked pinned, and leaves other idle chats out.
+func TestGetAgentsPinnedKeepsIdlePins(t *testing.T) {
+	old := time.Now().Add(-48 * time.Hour)
+	srv, ts := newTestServerWithSessions(t, []*model.Session{
+		{SessionID: "pinned-old", Agent: "cursor", CWD: t.TempDir(), Name: "pinned", LastActivity: old},
+		{SessionID: "loose-old", Agent: "cursor", CWD: t.TempDir(), Name: "loose", LastActivity: old},
+	})
+	defer ts.Close()
+	srv.pinnedIDs = func() []string { return []string{"pinned-old", "gone"} }
+
+	if got := getAgents(t, ts.URL).Agents; len(got) != 0 {
+		t.Fatalf("default list = %+v, want empty", got)
+	}
+	got := getAgentsAt(t, ts.URL+"/api/agents?pinned=true").Agents
+	if len(got) != 1 || got[0].ID != "pinned-old" || !got[0].Pinned || got[0].Status != agentIdle {
+		t.Fatalf("pinned list = %+v, want only pinned-old, idle and pinned", got)
+	}
+}

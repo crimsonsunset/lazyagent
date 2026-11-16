@@ -14,6 +14,7 @@ import (
 
 	"github.com/illegalstudio/lazyagent/internal/apiauth"
 	"github.com/illegalstudio/lazyagent/internal/core"
+	"github.com/illegalstudio/lazyagent/internal/cursor"
 	"github.com/illegalstudio/lazyagent/internal/model"
 	"github.com/illegalstudio/lazyagent/internal/sessions"
 )
@@ -32,6 +33,8 @@ type Server struct {
 	ln       net.Listener
 	authSalt string
 	cloud    *cloudAgents
+	// pinnedIDs lists the chats pinned in Cursor's Agents window. A field so tests can stub it.
+	pinnedIDs func() []string
 
 	// SSE subscribers.
 	ssemu   sync.Mutex
@@ -66,10 +69,11 @@ func New(host string, provider core.SessionProvider, bearerToken, authSalt strin
 	}
 
 	s := &Server{
-		manager:  manager,
-		authSalt: authSalt,
-		cloud:    newCloudAgents(cursorAPIBase, cursorKeyFromEnv(), cfg.Cloud),
-		sseSubs:  make(map[chan struct{}]struct{}),
+		manager:   manager,
+		authSalt:  authSalt,
+		cloud:     newCloudAgents(cursorAPIBase, cursorKeyFromEnv(), cfg.Cloud),
+		pinnedIDs: cursor.PinnedIDs,
+		sseSubs:   make(map[chan struct{}]struct{}),
 	}
 	s.mux = http.NewServeMux()
 	s.routes()

@@ -40,6 +40,7 @@ type AgentItem struct {
 	Touched   []string  `json:"touched,omitempty"` // other branches the chat worked on
 	Repo      string    `json:"repo,omitempty"`    // cwd for IDE and CLI, repo URL for cloud
 	URL       string    `json:"url,omitempty"`
+	Pinned    bool      `json:"pinned,omitempty"` // pinned in Cursor's Agents window
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -248,8 +249,9 @@ func (s *Server) localSessions(includeAll bool) []*model.Session {
 	return s.manager.QuerySessions("", "")
 }
 
-// ideAgents returns local sessions (IDE chats and CLI sessions) as AgentItems.
-func (s *Server) ideAgents(includeAll bool) []AgentItem {
+// ideAgents returns local sessions (IDE chats and CLI sessions) as AgentItems,
+// marking the ones in pinned.
+func (s *Server) ideAgents(includeAll bool, pinned map[string]bool) []AgentItem {
 	visible := s.localSessions(includeAll)
 	items := make([]AgentItem, 0, len(visible))
 	for _, sess := range visible {
@@ -269,6 +271,7 @@ func (s *Server) ideAgents(includeAll bool) []AgentItem {
 			Branch:    sess.GitBranch,
 			Touched:   sess.TouchedBranches,
 			Repo:      sess.CWD,
+			Pinned:    pinned[sess.SessionID],
 			UpdatedAt: sess.LastActivity,
 		})
 	}
@@ -277,12 +280,18 @@ func (s *Server) ideAgents(includeAll bool) []AgentItem {
 
 // handleGetAgents serves GET /api/agents: IDE chats plus Cursor cloud agents
 // in one list. Idle agents and sessions older than the manager's time window
-// are left out unless ?all=true.
+// are left out unless ?all=true. ?pinned=true keeps idle chats pinned in
+// Cursor's Agents window, however old.
 func (s *Server) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 	includeIdle := r.URL.Query().Get("all") == "true"
+	includePinned := r.URL.Query().Get("pinned") == "true"
 	resp := AgentsResponse{Agents: []AgentItem{}, Errors: []string{}}
 
-	all := s.ideAgents(includeIdle)
+	pinned := map[string]bool{}
+	for _, id := range s.pinnedIDs() {
+		pinned[id] = true
+	}
+	all := s.ideAgents(includeIdle || includePinned, pinned)
 	if s.cloud.enabled() {
 		cloud, err := s.cloud.list()
 		if err != nil {
@@ -292,7 +301,7 @@ func (s *Server) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, a := range all {
-		if includeIdle || a.Status != agentIdle {
+		if includeIdle || a.Status != agentIdle || (includePinned && a.Pinned) {
 			resp.Agents = append(resp.Agents, a)
 		}
 	}
