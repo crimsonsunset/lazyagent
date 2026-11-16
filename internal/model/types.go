@@ -62,6 +62,7 @@ type Session struct {
 	IsSidechain bool // true = sub-agent spawned by another session
 	CLI         bool // true = Cursor CLI (cursor-agent) session rather than an IDE chat
 	Running     bool // true = Cursor IDE says a turn is in flight (composer header unfinishedRunAt)
+	Blocked     bool // true = Cursor IDE says the chat waits on the user: a question, approval or plan (orange dot)
 
 	// TouchedBranches are the other branches the chat worked on (Cursor IDE only).
 	TouchedBranches []string
