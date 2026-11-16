@@ -41,6 +41,7 @@ type AgentItem struct {
 	Repo      string    `json:"repo,omitempty"`    // cwd for IDE and CLI, repo URL for cloud
 	URL       string    `json:"url,omitempty"`
 	Pinned    bool      `json:"pinned,omitempty"` // pinned in Cursor's Agents window
+	Origin    string    `json:"origin"`           // "gandalf" (fellowship dispatch run) or "you"
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -290,8 +291,8 @@ func (s *Server) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.agentsResponse(includeIdle, includePinned))
 }
 
-// agentsResponse builds the /api/agents list, newest activity first. It is
-// shared by the HTTP handler and the Home Assistant push.
+// agentsResponse builds the /api/agents list, newest activity first, with each
+// agent's origin. It is shared by the HTTP handler and the Home Assistant push.
 func (s *Server) agentsResponse(includeIdle, includePinned bool) AgentsResponse {
 	resp := AgentsResponse{Agents: []AgentItem{}, Errors: []string{}, GeneratedAt: time.Now().UTC()}
 
@@ -310,6 +311,7 @@ func (s *Server) agentsResponse(includeIdle, includePinned bool) AgentsResponse 
 
 	for _, a := range all {
 		if includeIdle || a.Status != agentIdle || (includePinned && a.Pinned) {
+			a.Origin = s.origins.origin(a.ID)
 			resp.Agents = append(resp.Agents, a)
 		}
 	}

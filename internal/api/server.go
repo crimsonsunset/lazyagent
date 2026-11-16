@@ -37,6 +37,8 @@ type Server struct {
 	pinnedIDs func() []string
 	// push sends /api/agents?pinned=true to Home Assistant on change. Nil when unconfigured.
 	push *haPush
+	// origins tells agents a fellowship dispatch run started from Joe's own. Nil means all "you".
+	origins *dispatchOrigins
 
 	// SSE subscribers.
 	ssemu   sync.Mutex
@@ -76,6 +78,7 @@ func New(host string, provider core.SessionProvider, bearerToken, authSalt strin
 		cloud:     newCloudAgents(cursorAPIBase, cursorKeyFromEnv(), cfg.Cloud),
 		pinnedIDs: cursor.PinnedIDs,
 		push:      newHAPush(),
+		origins:   newDispatchOrigins(),
 		sseSubs:   make(map[chan struct{}]struct{}),
 	}
 	s.mux = http.NewServeMux()
