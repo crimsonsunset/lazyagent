@@ -54,3 +54,46 @@ func TestDispatchOrigins(t *testing.T) {
 		t.Errorf("missing dir origin = %q, want you", got)
 	}
 }
+
+// TestDispatchOriginsLiteralDir checks glob characters in the runs dir path
+// are treated as plain text.
+func TestDispatchOriginsLiteralDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "dispatch[1]", "runs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cloud.json"), []byte(`{"agentId":"bc-cloud"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&dispatchOrigins{dir: dir}).origin("bc-cloud"); got != originGandalf {
+		t.Errorf("origin(bc-cloud) = %q in a dir with brackets, want gandalf", got)
+	}
+}
+
+// TestDispatchOriginsRetriesUnreadableRun checks a run file that could not be
+// read is picked up on a later request once it is readable again, even though
+// fixing permissions leaves the dir mtime unchanged.
+func TestDispatchOriginsRetriesUnreadableRun(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files regardless of mode")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cloud.json")
+	if err := os.WriteFile(path, []byte(`{"agentId":"bc-cloud"}`), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	d := &dispatchOrigins{dir: dir}
+	if got := d.origin("bc-cloud"); got != originYou {
+		t.Fatalf("origin(bc-cloud) = %q with an unreadable run, want you", got)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.origin("bc-cloud"); got != originYou {
+		t.Errorf("origin(bc-cloud) = %q before the retry is due, want you (no rescan on every request)", got)
+	}
+	d.retryAt = time.Now().Add(-time.Second)
+	if got := d.origin("bc-cloud"); got != originGandalf {
+		t.Errorf("origin(bc-cloud) = %q after the retry, want gandalf", got)
+	}
+}
