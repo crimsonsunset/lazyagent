@@ -61,6 +61,16 @@ func searchDBPath() string {
 	return filepath.Join(filepath.Dir(p), "conversation-search.db")
 }
 
+// pinsDBPath returns the Agents window's state.vscdb, which holds the pinned
+// chat list, or "" when the state path is unknown.
+func pinsDBPath() string {
+	p := stateDBPath()
+	if p == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(filepath.Dir(p)), "workspaceStorage", "empty-window", "state.vscdb")
+}
+
 // cliChatsDir returns the directory where the Cursor CLI keeps one folder per
 // session, or "" when the home directory cannot be resolved.
 func cliChatsDir() string {
