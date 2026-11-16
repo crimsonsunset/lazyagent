@@ -104,3 +104,23 @@ func TestActivityTracker_NilBusSafe(t *testing.T) {
 	s := &model.Session{SessionID: "s1", Agent: "claude", LastActivity: time.Now(), Status: model.StatusThinking}
 	tr.Update([]*model.Session{s}, time.Now())
 }
+
+// TestResolveActivity_RunningOutlastsTimeout checks a chat Cursor marks as running stays
+// active long after its last message, and drops to idle once the flag clears.
+func TestResolveActivity_RunningOutlastsTimeout(t *testing.T) {
+	now := time.Now()
+	s := &model.Session{SessionID: "s1", Agent: "cursor", LastActivity: now.Add(-10 * time.Minute), Running: true}
+	if got := ResolveActivity(s, now); got != ActivityThinking {
+		t.Fatalf("running, quiet 10m: got %q, want %q", got, ActivityThinking)
+	}
+
+	s.Status, s.CurrentTool = model.StatusExecutingTool, "Bash"
+	if got := ResolveActivity(s, now); got != ActivityRunning {
+		t.Fatalf("running a shell tool: got %q, want %q", got, ActivityRunning)
+	}
+
+	s.Running = false
+	if got := ResolveActivity(s, now); got != ActivityIdle {
+		t.Fatalf("flag cleared: got %q, want %q", got, ActivityIdle)
+	}
+}

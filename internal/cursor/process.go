@@ -175,6 +175,13 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 		cache.mu.Unlock()
 	}
 
+	running, runErr := queryRunning(db)
+	if runErr != nil {
+		hasPartialRead = true
+	} else {
+		sessions = applyRunning(cache, sessions, running)
+	}
+
 	// Prune stale cache entries not present in current results.
 	activeIDs := make(map[string]struct{}, len(sessions))
 	for _, s := range sessions {
@@ -197,6 +204,51 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	cache.mu.Unlock()
 
 	return applyGitMeta(cache, sessions), nil
+}
+
+// queryRunning returns the ids of IDE chats with a turn in flight: Cursor sets
+// unfinishedRunAt on the composer header when a run starts and clears it when
+// the run ends. Returns an empty map when the table is missing (older Cursor
+// builds) and an error when the read fails, so the caller can retry next poll.
+func queryRunning(db *sql.DB) (map[string]bool, error) {
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'composerHeaders'`).Scan(&tables); err != nil {
+		return nil, err
+	}
+	running := map[string]bool{}
+	if tables == 0 {
+		return running, nil
+	}
+	rows, err := db.Query(`SELECT composerId FROM composerHeaders
+		WHERE json_extract(value, '$.unfinishedRunAt') IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sid string
+		if err := rows.Scan(&sid); err != nil {
+			return nil, err
+		}
+		running[sid] = true
+	}
+	return running, rows.Err()
+}
+
+// applyRunning sets Running from the run flags, cloning any session whose flag
+// changed so a pointer shared with the manager is never mutated.
+func applyRunning(cache *SessionCache, sessions []*model.Session, running map[string]bool) []*model.Session {
+	for i, s := range sessions {
+		if s.Running == running[s.SessionID] {
+			continue
+		}
+		clone := *s
+		clone.Running = running[s.SessionID]
+		sessions[i] = &clone
+		cache.replace(&clone)
+	}
+	return sessions
 }
 
 func cachedResults(cache *SessionCache) []*model.Session {

@@ -72,9 +72,10 @@ type ActivityEntry struct {
 // Priority:
 //  1. Compacting (summary entry written recently).
 //  2. Most recent tool in RecentTools within ActivityTimeout.
-//  3. StatusWaitingForUser within WaitingTimeout (with grace period).
-//  4. LastActivity older than ActivityTimeout → idle.
-//  5. Current JSONL status → thinking if Claude is processing, idle otherwise.
+//  3. Running (the agent reports a turn in flight) → current tool or thinking.
+//  4. StatusWaitingForUser within WaitingTimeout (with grace period).
+//  5. LastActivity older than ActivityTimeout → idle.
+//  6. Current JSONL status → thinking if Claude is processing, idle otherwise.
 func ResolveActivity(s *model.Session, now time.Time) ActivityKind {
 	sinceActivity := now.Sub(s.LastActivity)
 
@@ -87,6 +88,15 @@ func ResolveActivity(s *model.Session, now time.Time) ActivityKind {
 		if !last.Timestamp.IsZero() && now.Sub(last.Timestamp) < ActivityTimeout {
 			return ToolActivity(last.Name)
 		}
+	}
+
+	// The agent's own run flag beats the timestamp heuristics: a long think or
+	// shell command writes nothing for minutes but is still working.
+	if s.Running {
+		if s.Status == model.StatusExecutingTool && s.CurrentTool != "" {
+			return ToolActivity(s.CurrentTool)
+		}
+		return ActivityThinking
 	}
 
 	if s.Status == model.StatusWaitingForUser {

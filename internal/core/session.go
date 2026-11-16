@@ -692,7 +692,7 @@ func (m *SessionManager) filterSessionsLocked(search string, filter ActivityKind
 		if excludedByCWD(s.CWD, m.excludeCWDSubstrings) {
 			continue
 		}
-		if s.IsSidechain || !s.LastActivity.After(cutoff) {
+		if s.IsSidechain || (!s.Running && !s.LastActivity.After(cutoff)) {
 			continue
 		}
 		if isNeverUsed(s) {

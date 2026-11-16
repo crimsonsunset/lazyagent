@@ -233,3 +233,41 @@ func TestBuildStateSessionPreservesPartialChunks(t *testing.T) {
 		})
 	}
 }
+
+// TestQueryRunningReadsUnfinishedRunAt checks only chats with unfinishedRunAt set count as running.
+func TestQueryRunningReadsUnfinishedRunAt(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec("CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, value TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO composerHeaders VALUES
+		('busy', '{"name":"busy","unfinishedRunAt":1794811464561}'),
+		('done', '{"name":"done"}')`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := queryRunning(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got["busy"] || got["done"] || len(got) != 1 {
+		t.Fatalf("queryRunning = %v, want only busy", got)
+	}
+}
+
+// TestQueryRunningWithoutHeadersTable checks an older Cursor DB reports nothing running.
+func TestQueryRunningWithoutHeadersTable(t *testing.T) {
+	got, err := queryRunning(newTestDB(t))
+	if err != nil || len(got) != 0 {
+		t.Fatalf("queryRunning = %v, %v, want empty and no error", got, err)
+	}
+}
+
+// TestQueryRunningReportsReadFailure checks a failed read errors instead of clearing every run flag.
+func TestQueryRunningReportsReadFailure(t *testing.T) {
+	db := newTestDB(t)
+	db.Close()
+	if _, err := queryRunning(db); err == nil {
+		t.Fatal("queryRunning on a closed DB returned no error")
+	}
+}
