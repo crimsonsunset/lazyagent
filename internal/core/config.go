@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/illegalstudio/lazyagent/internal/apiauth"
-	"github.com/illegalstudio/lazyagent/internal/claude"
 	"github.com/illegalstudio/lazyagent/internal/cursor"
 )
 
@@ -144,8 +143,9 @@ func (c Config) ValidWebhooks() []WebhookConfig {
 type DiscoveryConfig struct {
 	// RecentDays is how far back Cursor chats and CLI sessions are listed.
 	RecentDays int `json:"recent_days"`
-	// GitTimeoutSec bounds each git call made to read a branch or worktree.
-	GitTimeoutSec int `json:"git_timeout_sec"`
+	// LogTimings logs one line per Cursor discovery cycle and per Home
+	// Assistant push with how long each phase took. Off by default.
+	LogTimings bool `json:"log_timings,omitempty"`
 }
 
 // CloudConfig bounds how /api/agents reads Cursor cloud agents.
@@ -212,7 +212,7 @@ func DefaultConfig() Config {
 			"kimi":     true,
 		},
 		ExcludeCWDSubstrings: []string{},
-		Discovery:            DiscoveryConfig{RecentDays: 30, GitTimeoutSec: 3},
+		Discovery:            DiscoveryConfig{RecentDays: 30},
 		Cloud:                CloudConfig{CacheTTLSec: 30, FetchTimeoutSec: 10, PageLimit: 100},
 		TUI:                  TUIConfig{Theme: "auto"},
 	}
@@ -224,7 +224,6 @@ func normalizeLimits(cfg *Config) {
 	defaults := DefaultConfig()
 	for _, limit := range []struct{ value, fallback *int }{
 		{&cfg.Discovery.RecentDays, &defaults.Discovery.RecentDays},
-		{&cfg.Discovery.GitTimeoutSec, &defaults.Discovery.GitTimeoutSec},
 		{&cfg.Cloud.CacheTTLSec, &defaults.Cloud.CacheTTLSec},
 		{&cfg.Cloud.FetchTimeoutSec, &defaults.Cloud.FetchTimeoutSec},
 		{&cfg.Cloud.PageLimit, &defaults.Cloud.PageLimit},
@@ -239,7 +238,7 @@ func normalizeLimits(cfg *Config) {
 // sessions. Call it once at startup, before discovery runs.
 func ApplyDiscovery(cfg Config) {
 	cursor.RecentWindow = time.Duration(cfg.Discovery.RecentDays) * 24 * time.Hour
-	claude.GitTimeout = time.Duration(cfg.Discovery.GitTimeoutSec) * time.Second
+	cursor.LogTimings = cfg.Discovery.LogTimings
 }
 
 // AgentEnabled returns whether an agent is enabled in config.

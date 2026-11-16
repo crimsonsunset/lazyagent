@@ -46,9 +46,11 @@ type AgentItem struct {
 
 // AgentsResponse is returned by GET /api/agents. Errors lists sources that
 // failed, so a consumer can tell "no agents" from "cloud lookup broke".
+// GeneratedAt lets a consumer fed by both a poll and the push keep the newest.
 type AgentsResponse struct {
-	Agents []AgentItem `json:"agents"`
-	Errors []string    `json:"errors"`
+	Agents      []AgentItem `json:"agents"`
+	Errors      []string    `json:"errors"`
+	GeneratedAt time.Time   `json:"generated_at"`
 }
 
 // cloudAgents lists Cursor cloud agents and caches the result briefly, so
@@ -285,7 +287,13 @@ func (s *Server) ideAgents(includeAll bool, pinned map[string]bool) []AgentItem 
 func (s *Server) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 	includeIdle := r.URL.Query().Get("all") == "true"
 	includePinned := r.URL.Query().Get("pinned") == "true"
-	resp := AgentsResponse{Agents: []AgentItem{}, Errors: []string{}}
+	writeJSON(w, http.StatusOK, s.agentsResponse(includeIdle, includePinned))
+}
+
+// agentsResponse builds the /api/agents list, newest activity first. It is
+// shared by the HTTP handler and the Home Assistant push.
+func (s *Server) agentsResponse(includeIdle, includePinned bool) AgentsResponse {
+	resp := AgentsResponse{Agents: []AgentItem{}, Errors: []string{}, GeneratedAt: time.Now().UTC()}
 
 	pinned := map[string]bool{}
 	for _, id := range s.pinnedIDs() {
@@ -308,7 +316,7 @@ func (s *Server) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 	sort.SliceStable(resp.Agents, func(i, j int) bool {
 		return resp.Agents[i].UpdatedAt.After(resp.Agents[j].UpdatedAt)
 	})
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }
 
 // cursorKeyFromEnv returns the configured Cursor API key, trimmed.

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -12,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/illegalstudio/lazyagent/internal/claude"
 	"github.com/illegalstudio/lazyagent/internal/model"
 	_ "modernc.org/sqlite"
 )
@@ -38,6 +38,11 @@ type SessionCache struct {
 	touchedMtime  time.Time
 	touchedSize   int64
 	touchedLoaded bool
+
+	// Git lookups made and time spent in them during the current discovery
+	// cycle, for LogTimings. Reset at the start of DiscoverSessions.
+	gitLookups int
+	gitSpent   time.Duration
 }
 
 type cachedSession struct {
@@ -71,11 +76,35 @@ func StateDBDir() string {
 	return filepath.Dir(p)
 }
 
+// LogTimings logs how long each discovery phase took, one line per cycle. Set
+// from config.json "discovery.log_timings" at startup (core.ApplyDiscovery).
+var LogTimings bool
+
 // DiscoverSessions discovers recent Cursor sessions: IDE chats from state.vscdb
-// and CLI sessions from ~/.cursor/chats.
+// and CLI sessions from ~/.cursor/chats. With LogTimings on, it logs the IDE
+// read, the CLI read and the git lookups made by either, with the total.
 func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
+	start := time.Now()
+	cache.mu.Lock()
+	cache.gitLookups, cache.gitSpent = 0, 0
+	cache.mu.Unlock()
+
 	ide, err := discoverIDESessions(cache)
-	return append(ide, DiscoverCLISessions(cache)...), err
+	ideDone := time.Now()
+	sessions := append(ide, DiscoverCLISessions(cache)...)
+	if LogTimings {
+		cache.mu.Lock()
+		lookups, spent := cache.gitLookups, cache.gitSpent
+		cache.mu.Unlock()
+		log.Printf("timing discover: total=%s ide=%s cli=%s git=%s git_lookups=%d sessions=%d",
+			ms(time.Since(start)), ms(ideDone.Sub(start)), ms(time.Since(ideDone)), ms(spent), lookups, len(sessions))
+	}
+	return sessions, err
+}
+
+// ms formats d in whole milliseconds for timing logs.
+func ms(d time.Duration) string {
+	return fmt.Sprintf("%dms", d.Milliseconds())
 }
 
 // discoverIDESessions discovers recent Cursor IDE chats from state.vscdb.
@@ -110,10 +139,14 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	defer db.Close()
 
 	// Step 1: Get composer summaries (session ID, bubble count, last bubble ID).
+	phaseStart := time.Now()
 	composers, err := queryComposers(db)
 	if err != nil {
 		return nil, nil
 	}
+	composersTook := time.Since(phaseStart)
+	phaseStart = time.Now()
+	var stampTook time.Duration
 
 	// Step 2: For each composer, get last bubble timestamp and filter to recent.
 	cutoff := time.Now().Add(-RecentWindow)
@@ -126,7 +159,9 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 			continue
 		}
 
+		stampStart := time.Now()
 		lastAt := getExactBubbleTimestamp(db, c.sid, c.lastBubble)
+		stampTook += time.Since(stampStart)
 		if lastAt.IsZero() || !lastAt.After(cutoff) {
 			continue
 		}
@@ -176,7 +211,13 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 		cache.mu.Unlock()
 	}
 
+	loopTook := time.Since(phaseStart)
+	phaseStart = time.Now()
 	flags, flagErr := queryHeaderFlags(db)
+	if LogTimings {
+		log.Printf("timing ide: composers=%s loop=%s (timestamps=%s composers=%d) flags=%s",
+			ms(composersTook), ms(loopTook), ms(stampTook), len(composers), ms(time.Since(phaseStart)))
+	}
 	if flagErr != nil {
 		hasPartialRead = true
 	} else {
@@ -217,13 +258,9 @@ type headerFlags struct {
 // the user, keyed by id. Returns a nil map when the table is missing (older
 // Cursor builds) and an error when the read fails, so the caller can retry next poll.
 func queryHeaderFlags(db *sql.DB) (map[string]headerFlags, error) {
-	var tables int
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master
-		WHERE type = 'table' AND name = 'composerHeaders'`).Scan(&tables); err != nil {
+	hasHeaders, err := hasComposerHeaders(db)
+	if err != nil || !hasHeaders {
 		return nil, err
-	}
-	if tables == 0 {
-		return nil, nil
 	}
 	flags := map[string]headerFlags{}
 	rows, err := db.Query(`SELECT composerId,
@@ -313,24 +350,58 @@ func chunkedHeaderKey(sid string, chunk int) string {
 	return fmt.Sprintf("composerConvHeaders:%s:%06d", sid, chunk)
 }
 
+// composerColumns is the per-chat summary read from a composerData value.
+const composerColumns = `
+		SELECT json_extract(d.value, '$.composerId'),
+		       json_array_length(json_extract(d.value, '$.fullConversationHeadersOnly')),
+		       json_extract(d.value, '$.fullConversationHeadersOnly[#-1].bubbleId'),
+		       json_extract(d.value, '$.headerLog.count'),
+		       json_extract(d.value, '$.headerLog.chunkCount'),
+		       json_extract(d.value, '$.lastUpdatedAt'),
+		       json_extract(d.value, '$.name')`
+
+// composersViaHeadersSQL parses composerData only for the chats the
+// composerHeaders index lists as recently updated. A full scan parses every
+// composerData row (about 3,000 and 155 MB on a long-lived install) on each
+// database change, which cost 2 to 5s per cycle (#114, #115).
+const composersViaHeadersSQL = composerColumns + `
+		FROM composerHeaders h
+		JOIN cursorDiskKV d ON d.key = 'composerData:' || h.composerId
+		WHERE h.lastUpdatedAt >= ? AND COALESCE(h.isSubagent, 0) = 0
+		  AND json_extract(d.value, '$.subagentInfo') IS NULL`
+
+// composersFullScanSQL is the fallback for Cursor builds without composerHeaders.
+const composersFullScanSQL = composerColumns + `
+		FROM cursorDiskKV d
+		WHERE d.key >= 'composerData:' AND d.key < 'composerData;'
+		  AND json_extract(d.value, '$.subagentInfo') IS NULL`
+
+// hasComposerHeaders reports whether the composerHeaders table exists.
+func hasComposerHeaders(db *sql.DB) (bool, error) {
+	var tables int
+	err := db.QueryRow(`SELECT count(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'composerHeaders'`).Scan(&tables)
+	return tables > 0, err
+}
+
 // queryComposers reads composerData entries to get session summaries.
 // Subagent chats (subagentInfo set) are skipped: they are spawned by a parent chat.
 // Uses json_extract on the last element of fullConversationHeadersOnly and
 // falls back to the chunked composerConvHeaders keys for recently updated
-// composers whose inline list is empty or absent.
+// composers whose inline list is empty or absent. Only chats updated within
+// RecentWindow are read when composerHeaders exists.
 func queryComposers(db *sql.DB) ([]composerSummary, error) {
-	rows, err := db.Query(`
-		SELECT json_extract(value, '$.composerId'),
-		       json_array_length(json_extract(value, '$.fullConversationHeadersOnly')),
-		       json_extract(value, '$.fullConversationHeadersOnly[#-1].bubbleId'),
-		       json_extract(value, '$.headerLog.count'),
-		       json_extract(value, '$.headerLog.chunkCount'),
-		       json_extract(value, '$.lastUpdatedAt'),
-		       json_extract(value, '$.name')
-		FROM cursorDiskKV
-		WHERE key >= 'composerData:' AND key < 'composerData;'
-		  AND json_extract(value, '$.subagentInfo') IS NULL
-	`)
+	cutoffMs := time.Now().Add(-RecentWindow).UnixMilli()
+	hasHeaders, err := hasComposerHeaders(db)
+	if err != nil {
+		return nil, err
+	}
+	var rows *sql.Rows
+	if hasHeaders {
+		rows, err = db.Query(composersViaHeadersSQL, cutoffMs)
+	} else {
+		rows, err = db.Query(composersFullScanSQL)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +415,6 @@ func queryComposers(db *sql.DB) ([]composerSummary, error) {
 	}
 	var result []composerSummary
 	var chunked []chunkedComposer
-	cutoffMs := time.Now().Add(-RecentWindow).UnixMilli()
 	for rows.Next() {
 		var c composerSummary
 		var lastBubble, name *string
@@ -689,21 +759,6 @@ func inferWorkspace(paths []string) string {
 		return root
 	}
 	return result
-}
-
-// gitBranch returns the branch checked out at path, or "" when path is not a
-// git checkout or HEAD is detached. Cursor does not record a branch, so this
-// reads it from the working directory the chat ran in (a worktree has its own).
-// A git that does not answer within claude.GitTimeout gives "".
-func gitBranch(path string) string {
-	branch, err := claude.GitRevParse(path, "--abbrev-ref", "HEAD")
-	if err != nil {
-		return ""
-	}
-	if branch == "HEAD" {
-		return ""
-	}
-	return branch
 }
 
 // findProjectRoot walks up from a path looking for a project root.

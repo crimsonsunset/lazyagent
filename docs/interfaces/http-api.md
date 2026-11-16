@@ -351,11 +351,16 @@ Cloud agents need `LAZYAGENT_CURSOR_API_KEY` in the server's environment: one Cu
       "updated_at": "2026-11-03T20:00:00Z"
     }
   ],
-  "errors": []
+  "errors": [],
+  "generated_at": "2026-11-16T16:42:34.771679Z"
 }
 ```
 
-`source` is `ide` or `cloud`. `status` is `working`, `needs_you` or `idle` (IDE `waiting` maps to `needs_you`). `errors` lists sources that failed, such as `cloud: cursor api returned 401`, so an empty `agents` list can be told apart from a broken lookup.
+`source` is `ide` or `cloud`. `status` is `working`, `needs_you` or `idle` (IDE `waiting` maps to `needs_you`). `errors` lists sources that failed, such as `cloud: cursor api returned 401`, so an empty `agents` list can be told apart from a broken lookup. `generated_at` is when the response was built, so a consumer fed by both a poll and the push below can keep the newest.
+
+#### Push to a webhook
+
+Set `LAZYAGENT_HA_WEBHOOK_URL` (an `http(s)` URL) and the server POSTs the `?pinned=true` response there as JSON whenever it changes: an agent added or removed, renamed, a status change, a pin. `updated_at` alone does not count. Checks run on every session refresh (every second for Cursor). One send runs at a time with a 5 second timeout. A non-2xx or failed send is retried on the next check. Built for a Home Assistant webhook trigger, but any receiver works.
 
 ### `GET /api/stats`
 

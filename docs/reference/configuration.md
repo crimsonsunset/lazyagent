@@ -121,7 +121,7 @@ How much history lazyagent reads for Cursor. Every key is a positive integer. A 
 
 ```json
 {
-  "discovery": { "recent_days": 30, "git_timeout_sec": 3 },
+  "discovery": { "recent_days": 30 },
   "cloud": { "cache_ttl_sec": 30, "fetch_timeout_sec": 10, "page_limit": 100 }
 }
 ```
@@ -129,7 +129,7 @@ How much history lazyagent reads for Cursor. Every key is a positive integer. A 
 | Key | Default | Controls |
 |---|---|---|
 | `discovery.recent_days` | `30` | How far back Cursor IDE chats and `cursor-agent` CLI sessions are listed |
-| `discovery.git_timeout_sec` | `3` | Time limit on each `git` call that reads a branch or worktree. A git that does not answer counts as "no branch" |
+| `discovery.log_timings` | `false` | Log one line per Cursor discovery cycle and per Home Assistant push with how long each phase took. Boolean, for diagnosing desk-screen lag |
 | `cloud.cache_ttl_sec` | `30` | How long the Cursor cloud agent list is served before a background refresh. Stale data is returned meanwhile |
 | `cloud.fetch_timeout_sec` | `10` | Time limit on one Cursor API call (one per account) |
 | `cloud.page_limit` | `100` | Most cloud agents read per account |

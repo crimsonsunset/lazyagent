@@ -35,6 +35,8 @@ type Server struct {
 	cloud    *cloudAgents
 	// pinnedIDs lists the chats pinned in Cursor's Agents window. A field so tests can stub it.
 	pinnedIDs func() []string
+	// push sends /api/agents?pinned=true to Home Assistant on change. Nil when unconfigured.
+	push *haPush
 
 	// SSE subscribers.
 	ssemu   sync.Mutex
@@ -73,6 +75,7 @@ func New(host string, provider core.SessionProvider, bearerToken, authSalt strin
 		authSalt:  authSalt,
 		cloud:     newCloudAgents(cursorAPIBase, cursorKeyFromEnv(), cfg.Cloud),
 		pinnedIDs: cursor.PinnedIDs,
+		push:      newHAPush(),
 		sseSubs:   make(map[chan struct{}]struct{}),
 	}
 	s.mux = http.NewServeMux()
@@ -193,14 +196,14 @@ func (s *Server) watchLoop(ctx context.Context) {
 			return
 		case <-events:
 			_ = s.manager.Reload()
-			s.notifySSE()
+			s.notifyChange()
 		case <-activityTicker.C:
 			if s.manager.UpdateActivities() {
-				s.notifySSE()
+				s.notifyChange()
 			}
 		case <-reloadC:
 			_ = s.manager.Reload()
-			s.notifySSE()
+			s.notifyChange()
 		}
 	}
 }
@@ -217,6 +220,13 @@ func (s *Server) removeSSESub(ch chan struct{}) {
 	s.ssemu.Lock()
 	delete(s.sseSubs, ch)
 	s.ssemu.Unlock()
+}
+
+// notifyChange tells SSE clients the sessions may have changed and lets the
+// Home Assistant push check whether its payload did.
+func (s *Server) notifyChange() {
+	s.notifySSE()
+	s.push.check(func() AgentsResponse { return s.agentsResponse(false, true) })
 }
 
 func (s *Server) notifySSE() {
@@ -346,7 +356,7 @@ func (s *Server) handleSetSessionName(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	s.notifySSE()
+	s.notifyChange()
 	writeJSON(w, http.StatusOK, map[string]string{"session_id": id, "custom_name": name})
 }
 
@@ -356,7 +366,7 @@ func (s *Server) handleDeleteSessionName(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	s.notifySSE()
+	s.notifyChange()
 	writeJSON(w, http.StatusOK, map[string]string{"session_id": id, "custom_name": ""})
 }
 

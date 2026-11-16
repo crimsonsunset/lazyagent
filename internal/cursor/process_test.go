@@ -3,6 +3,7 @@ package cursor
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -74,6 +75,36 @@ func TestQueryComposersDoesNotResolveStaleChunked(t *testing.T) {
 	}
 }
 
+// TestQueryComposersViaHeadersSkipsOldAndSubagents checks that with a
+// composerHeaders table only recent, non-subagent chats are parsed.
+func TestQueryComposersViaHeadersSkipsOldAndSubagents(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec(`CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, lastUpdatedAt INTEGER, isSubagent INTEGER, value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	oldMs := time.Now().Add(-RecentWindow - time.Hour).UnixMilli()
+	for _, c := range []struct {
+		sid       string
+		updatedMs int64
+		isSub     int
+	}{{"recent", nowMs(), 0}, {"old", oldMs, 0}, {"sub", nowMs(), 1}} {
+		put(t, db, "composerData:"+c.sid, fmt.Sprintf(
+			`{"composerId":%q,"fullConversationHeadersOnly":[{"bubbleId":"a","type":1}],"lastUpdatedAt":%d}`, c.sid, c.updatedMs))
+		if _, err := db.Exec("INSERT INTO composerHeaders VALUES (?, ?, ?, '{}')", c.sid, c.updatedMs, c.isSub); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(t, db, "composerData:headerless", `{"composerId":"headerless","fullConversationHeadersOnly":[{"bubbleId":"a","type":1}]}`)
+
+	got, err := queryComposers(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].sid != "recent" {
+		t.Fatalf("got %+v, want only the recent non-subagent chat", got)
+	}
+}
+
 func TestNormalizeToolNameCurrentCursor(t *testing.T) {
 	cases := map[string]string{
 		"run_terminal_command_v2": "Bash",
@@ -102,6 +133,50 @@ func TestQueryComposersInlineHeadersStillWork(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].count != 2 || got[0].lastBubble != "b" {
 		t.Fatalf("got %+v, want one composer with count 2, last bubble b", got)
+	}
+}
+
+// TestDiscoverIDESessionsPicksUpRename checks a rename with no new message reaches a cached session.
+func TestDiscoverIDESessionsPicksUpRename(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	dbPath := stateDBPath()
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec("CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)"); err != nil {
+		t.Fatal(err)
+	}
+	seed := func(name string) {
+		put(t, db, "composerData:s1", fmt.Sprintf(
+			`{"composerId":"s1","name":%q,"fullConversationHeadersOnly":[{"bubbleId":"b1","type":1}]}`, name))
+	}
+	seed("Old title")
+	put(t, db, "bubbleId:s1:b1", fmt.Sprintf(`{"type":1,"text":"hi","createdAt":%q}`,
+		time.Now().UTC().Format("2006-01-02T15:04:05.000Z")))
+
+	cache := NewSessionCache()
+	first, _ := discoverIDESessions(cache)
+	if len(first) != 1 || first[0].Name != "Old title" {
+		t.Fatalf("first discover = %+v, want one session named Old title", first)
+	}
+
+	seed("New title")
+	future := time.Now().Add(time.Minute)
+	if err := os.Chtimes(dbPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := discoverIDESessions(cache)
+	if len(second) != 1 || second[0].Name != "New title" {
+		t.Fatalf("second discover = %+v, want the renamed session", second)
+	}
+	if first[0].Name != "Old title" {
+		t.Errorf("first session mutated to %q, want a clone", first[0].Name)
 	}
 }
 
