@@ -139,10 +139,14 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	defer db.Close()
 
 	// Step 1: Get composer summaries (session ID, bubble count, last bubble ID).
+	phaseStart := time.Now()
 	composers, err := queryComposers(db)
 	if err != nil {
 		return nil, nil
 	}
+	composersTook := time.Since(phaseStart)
+	phaseStart = time.Now()
+	var stampTook time.Duration
 
 	// Step 2: For each composer, get last bubble timestamp and filter to recent.
 	cutoff := time.Now().Add(-RecentWindow)
@@ -155,7 +159,9 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 			continue
 		}
 
+		stampStart := time.Now()
 		lastAt := getExactBubbleTimestamp(db, c.sid, c.lastBubble)
+		stampTook += time.Since(stampStart)
 		if lastAt.IsZero() || !lastAt.After(cutoff) {
 			continue
 		}
@@ -205,7 +211,13 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 		cache.mu.Unlock()
 	}
 
+	loopTook := time.Since(phaseStart)
+	phaseStart = time.Now()
 	running, runErr := queryRunning(db)
+	if LogTimings {
+		log.Printf("timing ide: composers=%s loop=%s (timestamps=%s composers=%d) running=%s",
+			ms(composersTook), ms(loopTook), ms(stampTook), len(composers), ms(time.Since(phaseStart)))
+	}
 	if runErr != nil {
 		hasPartialRead = true
 	} else {
