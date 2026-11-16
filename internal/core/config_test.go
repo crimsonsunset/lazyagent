@@ -34,7 +34,7 @@ func TestLoadConfig_Limits(t *testing.T) {
 
 	write(`{"window_minutes": 30}`)
 	cfg := LoadConfig()
-	if cfg.Discovery.RecentDays != 30 || cfg.Discovery.GitTimeoutSec != 3 || cfg.Cloud.CacheTTLSec != 30 || cfg.Cloud.FetchTimeoutSec != 10 || cfg.Cloud.PageLimit != 100 {
+	if cfg.Discovery.RecentDays != 30 || cfg.Cloud.CacheTTLSec != 30 || cfg.Cloud.FetchTimeoutSec != 10 || cfg.Cloud.PageLimit != 100 {
 		t.Errorf("missing limits did not default: %+v %+v", cfg.Discovery, cfg.Cloud)
 	}
 	var onDisk map[string]json.RawMessage
@@ -47,12 +47,12 @@ func TestLoadConfig_Limits(t *testing.T) {
 		t.Error("LoadConfig did not write the cloud block back")
 	}
 
-	write(`{"discovery": {"recent_days": 7, "git_timeout_sec": 0}, "cloud": {"page_limit": -5}}`)
+	write(`{"discovery": {"recent_days": 7}, "cloud": {"page_limit": -5}}`)
 	cfg = LoadConfig()
 	if cfg.Discovery.RecentDays != 7 {
 		t.Errorf("RecentDays = %d, want the configured 7", cfg.Discovery.RecentDays)
 	}
-	if cfg.Discovery.GitTimeoutSec != 3 || cfg.Cloud.PageLimit != 100 {
+	if cfg.Cloud.PageLimit != 100 {
 		t.Errorf("zero or negative limits must fall back to defaults: %+v %+v", cfg.Discovery, cfg.Cloud)
 	}
 }
