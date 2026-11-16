@@ -253,13 +253,12 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 // the run ends. Returns an empty map when the table is missing (older Cursor
 // builds) and an error when the read fails, so the caller can retry next poll.
 func queryRunning(db *sql.DB) (map[string]bool, error) {
-	var tables int
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master
-		WHERE type = 'table' AND name = 'composerHeaders'`).Scan(&tables); err != nil {
+	hasHeaders, err := hasComposerHeaders(db)
+	if err != nil {
 		return nil, err
 	}
 	running := map[string]bool{}
-	if tables == 0 {
+	if !hasHeaders {
 		return running, nil
 	}
 	rows, err := db.Query(`SELECT composerId FROM composerHeaders
@@ -334,24 +333,58 @@ func chunkedHeaderKey(sid string, chunk int) string {
 	return fmt.Sprintf("composerConvHeaders:%s:%06d", sid, chunk)
 }
 
+// composerColumns is the per-chat summary read from a composerData value.
+const composerColumns = `
+		SELECT json_extract(d.value, '$.composerId'),
+		       json_array_length(json_extract(d.value, '$.fullConversationHeadersOnly')),
+		       json_extract(d.value, '$.fullConversationHeadersOnly[#-1].bubbleId'),
+		       json_extract(d.value, '$.headerLog.count'),
+		       json_extract(d.value, '$.headerLog.chunkCount'),
+		       json_extract(d.value, '$.lastUpdatedAt'),
+		       json_extract(d.value, '$.name')`
+
+// composersViaHeadersSQL parses composerData only for the chats the
+// composerHeaders index lists as recently updated. A full scan parses every
+// composerData row (about 3,000 and 155 MB on a long-lived install) on each
+// database change, which cost 2 to 5s per cycle (#114, #115).
+const composersViaHeadersSQL = composerColumns + `
+		FROM composerHeaders h
+		JOIN cursorDiskKV d ON d.key = 'composerData:' || h.composerId
+		WHERE h.lastUpdatedAt >= ? AND COALESCE(h.isSubagent, 0) = 0
+		  AND json_extract(d.value, '$.subagentInfo') IS NULL`
+
+// composersFullScanSQL is the fallback for Cursor builds without composerHeaders.
+const composersFullScanSQL = composerColumns + `
+		FROM cursorDiskKV d
+		WHERE d.key >= 'composerData:' AND d.key < 'composerData;'
+		  AND json_extract(d.value, '$.subagentInfo') IS NULL`
+
+// hasComposerHeaders reports whether the composerHeaders table exists.
+func hasComposerHeaders(db *sql.DB) (bool, error) {
+	var tables int
+	err := db.QueryRow(`SELECT count(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'composerHeaders'`).Scan(&tables)
+	return tables > 0, err
+}
+
 // queryComposers reads composerData entries to get session summaries.
 // Subagent chats (subagentInfo set) are skipped: they are spawned by a parent chat.
 // Uses json_extract on the last element of fullConversationHeadersOnly and
 // falls back to the chunked composerConvHeaders keys for recently updated
-// composers whose inline list is empty or absent.
+// composers whose inline list is empty or absent. Only chats updated within
+// RecentWindow are read when composerHeaders exists.
 func queryComposers(db *sql.DB) ([]composerSummary, error) {
-	rows, err := db.Query(`
-		SELECT json_extract(value, '$.composerId'),
-		       json_array_length(json_extract(value, '$.fullConversationHeadersOnly')),
-		       json_extract(value, '$.fullConversationHeadersOnly[#-1].bubbleId'),
-		       json_extract(value, '$.headerLog.count'),
-		       json_extract(value, '$.headerLog.chunkCount'),
-		       json_extract(value, '$.lastUpdatedAt'),
-		       json_extract(value, '$.name')
-		FROM cursorDiskKV
-		WHERE key >= 'composerData:' AND key < 'composerData;'
-		  AND json_extract(value, '$.subagentInfo') IS NULL
-	`)
+	cutoffMs := time.Now().Add(-RecentWindow).UnixMilli()
+	hasHeaders, err := hasComposerHeaders(db)
+	if err != nil {
+		return nil, err
+	}
+	var rows *sql.Rows
+	if hasHeaders {
+		rows, err = db.Query(composersViaHeadersSQL, cutoffMs)
+	} else {
+		rows, err = db.Query(composersFullScanSQL)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +398,6 @@ func queryComposers(db *sql.DB) ([]composerSummary, error) {
 	}
 	var result []composerSummary
 	var chunked []chunkedComposer
-	cutoffMs := time.Now().Add(-RecentWindow).UnixMilli()
 	for rows.Next() {
 		var c composerSummary
 		var lastBubble, name *string

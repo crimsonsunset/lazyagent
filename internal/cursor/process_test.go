@@ -75,6 +75,36 @@ func TestQueryComposersDoesNotResolveStaleChunked(t *testing.T) {
 	}
 }
 
+// TestQueryComposersViaHeadersSkipsOldAndSubagents checks that with a
+// composerHeaders table only recent, non-subagent chats are parsed.
+func TestQueryComposersViaHeadersSkipsOldAndSubagents(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec(`CREATE TABLE composerHeaders (composerId TEXT PRIMARY KEY, lastUpdatedAt INTEGER, isSubagent INTEGER, value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	oldMs := time.Now().Add(-RecentWindow - time.Hour).UnixMilli()
+	for _, c := range []struct {
+		sid       string
+		updatedMs int64
+		isSub     int
+	}{{"recent", nowMs(), 0}, {"old", oldMs, 0}, {"sub", nowMs(), 1}} {
+		put(t, db, "composerData:"+c.sid, fmt.Sprintf(
+			`{"composerId":%q,"fullConversationHeadersOnly":[{"bubbleId":"a","type":1}],"lastUpdatedAt":%d}`, c.sid, c.updatedMs))
+		if _, err := db.Exec("INSERT INTO composerHeaders VALUES (?, ?, ?, '{}')", c.sid, c.updatedMs, c.isSub); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(t, db, "composerData:headerless", `{"composerId":"headerless","fullConversationHeadersOnly":[{"bubbleId":"a","type":1}]}`)
+
+	got, err := queryComposers(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].sid != "recent" {
+		t.Fatalf("got %+v, want only the recent non-subagent chat", got)
+	}
+}
+
 func TestNormalizeToolNameCurrentCursor(t *testing.T) {
 	cases := map[string]string{
 		"run_terminal_command_v2": "Bash",
