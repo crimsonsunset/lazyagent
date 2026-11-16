@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/illegalstudio/lazyagent/internal/cursor"
 )
 
 // haWebhookEnv holds the Home Assistant webhook URL that receives the
@@ -79,8 +81,10 @@ func (p *haPush) check(build func() AgentsResponse) {
 }
 
 // deliver POSTs resp unless HA already has the same content. The fingerprint
-// only advances on a 2xx, so a failed send is retried by the next check.
+// only advances on a 2xx, so a failed send is retried by the next check. With
+// cursor.LogTimings on, each send logs the fingerprint and POST durations.
 func (p *haPush) deliver(resp AgentsResponse) {
+	start := time.Now()
 	fp := agentsFingerprint(resp)
 	p.mu.Lock()
 	unchanged := fp == p.sent
@@ -89,7 +93,12 @@ func (p *haPush) deliver(resp AgentsResponse) {
 		return
 	}
 
+	fingerprinted := time.Now()
 	err := p.post(resp)
+	if cursor.LogTimings {
+		log.Printf("timing push: fingerprint=%dms post=%dms ok=%t",
+			fingerprinted.Sub(start).Milliseconds(), time.Since(fingerprinted).Milliseconds(), err == nil)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err != nil {

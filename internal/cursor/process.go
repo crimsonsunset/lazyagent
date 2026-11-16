@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -12,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/illegalstudio/lazyagent/internal/claude"
 	"github.com/illegalstudio/lazyagent/internal/model"
 	_ "modernc.org/sqlite"
 )
@@ -38,6 +38,11 @@ type SessionCache struct {
 	touchedMtime  time.Time
 	touchedSize   int64
 	touchedLoaded bool
+
+	// Git lookups made and time spent in them during the current discovery
+	// cycle, for LogTimings. Reset at the start of DiscoverSessions.
+	gitLookups int
+	gitSpent   time.Duration
 }
 
 type cachedSession struct {
@@ -71,11 +76,35 @@ func StateDBDir() string {
 	return filepath.Dir(p)
 }
 
+// LogTimings logs how long each discovery phase took, one line per cycle. Set
+// from config.json "discovery.log_timings" at startup (core.ApplyDiscovery).
+var LogTimings bool
+
 // DiscoverSessions discovers recent Cursor sessions: IDE chats from state.vscdb
-// and CLI sessions from ~/.cursor/chats.
+// and CLI sessions from ~/.cursor/chats. With LogTimings on, it logs the IDE
+// read, the CLI read and the git lookups made by either, with the total.
 func DiscoverSessions(cache *SessionCache) ([]*model.Session, error) {
+	start := time.Now()
+	cache.mu.Lock()
+	cache.gitLookups, cache.gitSpent = 0, 0
+	cache.mu.Unlock()
+
 	ide, err := discoverIDESessions(cache)
-	return append(ide, DiscoverCLISessions(cache)...), err
+	ideDone := time.Now()
+	sessions := append(ide, DiscoverCLISessions(cache)...)
+	if LogTimings {
+		cache.mu.Lock()
+		lookups, spent := cache.gitLookups, cache.gitSpent
+		cache.mu.Unlock()
+		log.Printf("timing discover: total=%s ide=%s cli=%s git=%s git_lookups=%d sessions=%d",
+			ms(time.Since(start)), ms(ideDone.Sub(start)), ms(time.Since(ideDone)), ms(spent), lookups, len(sessions))
+	}
+	return sessions, err
+}
+
+// ms formats d in whole milliseconds for timing logs.
+func ms(d time.Duration) string {
+	return fmt.Sprintf("%dms", d.Milliseconds())
 }
 
 // discoverIDESessions discovers recent Cursor IDE chats from state.vscdb.
@@ -669,21 +698,6 @@ func inferWorkspace(paths []string) string {
 		return root
 	}
 	return result
-}
-
-// gitBranch returns the branch checked out at path, or "" when path is not a
-// git checkout or HEAD is detached. Cursor does not record a branch, so this
-// reads it from the working directory the chat ran in (a worktree has its own).
-// A git that does not answer within claude.GitTimeout gives "".
-func gitBranch(path string) string {
-	branch, err := claude.GitRevParse(path, "--abbrev-ref", "HEAD")
-	if err != nil {
-		return ""
-	}
-	if branch == "HEAD" {
-		return ""
-	}
-	return branch
 }
 
 // findProjectRoot walks up from a path looking for a project root.

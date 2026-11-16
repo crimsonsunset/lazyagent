@@ -50,17 +50,20 @@ type cachedWorktree struct {
 }
 
 // lookupWorktree reads worktree and branch state for a working directory.
+// Cursor does not record a branch, so it comes from the chat's cwd (a worktree
+// has its own).
 func lookupWorktree(cwd string) worktreeInfo {
-	isWT, mainRepo := claude.IsWorktree(cwd)
-	return worktreeInfo{isWorktree: isWT, mainRepo: mainRepo, branch: gitBranch(cwd)}
+	info := claude.ReadGitInfo(cwd)
+	return worktreeInfo{isWorktree: info.IsWorktree, mainRepo: info.MainRepo, branch: info.Branch}
 }
 
-// maxGitLookups caps concurrent git lookups, so a pass with many stale
-// directories costs about one GitTimeout per batch instead of one per directory.
+// maxGitLookups caps concurrent git lookups so a pass with many stale
+// directories does not open every repo at once.
 const maxGitLookups = 8
 
 // worktrees returns the git state of every cwd, asking git again only for
-// directories not looked up within gitMetaTTL, in parallel.
+// directories not looked up within gitMetaTTL, in parallel. The lookup count
+// and time spent are added to the cycle's totals for LogTimings.
 func (c *SessionCache) worktrees(cwds []string) map[string]worktreeInfo {
 	result := make(map[string]worktreeInfo, len(cwds))
 	var stale []string
@@ -75,6 +78,7 @@ func (c *SessionCache) worktrees(cwds []string) map[string]worktreeInfo {
 	}
 	c.mu.Unlock()
 
+	start := time.Now()
 	infos := make([]worktreeInfo, len(stale))
 	slots := make(chan struct{}, maxGitLookups)
 	var wg sync.WaitGroup
@@ -90,6 +94,8 @@ func (c *SessionCache) worktrees(cwds []string) map[string]worktreeInfo {
 
 	now := time.Now()
 	c.mu.Lock()
+	c.gitLookups += len(stale)
+	c.gitSpent += now.Sub(start)
 	for i, cwd := range stale {
 		c.gitByCWD[cwd] = cachedWorktree{info: infos[i], at: now}
 		result[cwd] = infos[i]
