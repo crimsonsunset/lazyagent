@@ -32,3 +32,6 @@ vendor/
 
 # Superpowers scratch (brainstorm mockups, SDD ledgers)
 .superpowers/
+
+# Go test binaries (go test -c)
+*.test
