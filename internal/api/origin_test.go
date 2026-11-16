@@ -3,6 +3,7 @@ package api
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -74,8 +75,8 @@ func TestDispatchOriginsLiteralDir(t *testing.T) {
 // read is picked up on a later request once it is readable again, even though
 // fixing permissions leaves the dir mtime unchanged.
 func TestDispatchOriginsRetriesUnreadableRun(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads files regardless of mode")
+	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("root reads files regardless of mode; Windows ignores Unix permission bits")
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cloud.json")
