@@ -134,12 +134,13 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 		// Check if we have a cached session with the same bubble count.
 		cache.mu.Lock()
 		if cached, ok := cache.entries[c.sid]; ok && cached.bubbleCount == c.count {
-			if cached.session.LastActivity.Equal(lastAt) {
+			if cached.session.LastActivity.Equal(lastAt) && cached.session.Name == c.name {
 				sessions = append(sessions, cached.session)
 			} else {
-				// Timestamp changed — clone to avoid mutating a pointer shared with the manager.
+				// Timestamp or title (a rename) changed — clone to avoid mutating a pointer shared with the manager.
 				clone := *cached.session
 				clone.LastActivity = lastAt
+				clone.Name = c.name
 				cached.session = &clone
 				sessions = append(sessions, &clone)
 			}
@@ -175,11 +176,11 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 		cache.mu.Unlock()
 	}
 
-	running, runErr := queryRunning(db)
-	if runErr != nil {
+	flags, flagErr := queryHeaderFlags(db)
+	if flagErr != nil {
 		hasPartialRead = true
 	} else {
-		sessions = applyRunning(cache, sessions, running)
+		sessions = applyHeaderFlags(cache, sessions, flags)
 	}
 
 	// Prune stale cache entries not present in current results.
@@ -206,45 +207,65 @@ func discoverIDESessions(cache *SessionCache) ([]*model.Session, error) {
 	return applyGitMeta(cache, sessions), nil
 }
 
-// queryRunning returns the ids of IDE chats with a turn in flight: Cursor sets
-// unfinishedRunAt on the composer header when a run starts and clears it when
-// the run ends. Returns an empty map when the table is missing (older Cursor
-// builds) and an error when the read fails, so the caller can retry next poll.
-func queryRunning(db *sql.DB) (map[string]bool, error) {
+// headerFlags is a chat's live state from its composer header.
+type headerFlags struct {
+	running bool // unfinishedRunAt: Cursor sets it when a run starts, clears it when the run ends
+	blocked bool // hasBlockingPendingActions or hasPendingPlan: the chat waits on the user (orange dot)
+}
+
+// queryHeaderFlags returns the IDE chats with a turn in flight or waiting on
+// the user, keyed by id. Returns a nil map when the table is missing (older
+// Cursor builds) and an error when the read fails, so the caller can retry next poll.
+func queryHeaderFlags(db *sql.DB) (map[string]headerFlags, error) {
 	var tables int
 	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master
 		WHERE type = 'table' AND name = 'composerHeaders'`).Scan(&tables); err != nil {
 		return nil, err
 	}
-	running := map[string]bool{}
 	if tables == 0 {
-		return running, nil
+		return nil, nil
 	}
-	rows, err := db.Query(`SELECT composerId FROM composerHeaders
-		WHERE json_extract(value, '$.unfinishedRunAt') IS NOT NULL`)
+	flags := map[string]headerFlags{}
+	rows, err := db.Query(`SELECT composerId,
+			json_extract(value, '$.unfinishedRunAt') IS NOT NULL,
+			coalesce(json_extract(value, '$.hasBlockingPendingActions'), 0) = 1
+				OR coalesce(json_extract(value, '$.hasPendingPlan'), 0) = 1
+		FROM composerHeaders
+		WHERE json_extract(value, '$.unfinishedRunAt') IS NOT NULL
+		   OR json_extract(value, '$.hasBlockingPendingActions') = 1
+		   OR json_extract(value, '$.hasPendingPlan') = 1`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var sid string
-		if err := rows.Scan(&sid); err != nil {
+		var f headerFlags
+		if err := rows.Scan(&sid, &f.running, &f.blocked); err != nil {
 			return nil, err
 		}
-		running[sid] = true
+		flags[sid] = f
 	}
-	return running, rows.Err()
+	return flags, rows.Err()
 }
 
-// applyRunning sets Running from the run flags, cloning any session whose flag
-// changed so a pointer shared with the manager is never mutated.
-func applyRunning(cache *SessionCache, sessions []*model.Session, running map[string]bool) []*model.Session {
+// applyHeaderFlags sets Running and Blocked from the header flags, cloning any
+// session that changed so a pointer shared with the manager is never mutated.
+// When the header table exists it is the source of truth for "waits on you",
+// so a turn that simply ended (last bubble is assistant text) reads as idle.
+// A nil map (older Cursor builds) keeps the last-bubble status as is.
+func applyHeaderFlags(cache *SessionCache, sessions []*model.Session, flags map[string]headerFlags) []*model.Session {
 	for i, s := range sessions {
-		if s.Running == running[s.SessionID] {
+		f := flags[s.SessionID]
+		status := s.Status
+		if flags != nil && status == model.StatusWaitingForUser {
+			status = model.StatusIdle
+		}
+		if s.Running == f.running && s.Blocked == f.blocked && s.Status == status {
 			continue
 		}
 		clone := *s
-		clone.Running = running[s.SessionID]
+		clone.Running, clone.Blocked, clone.Status = f.running, f.blocked, status
 		sessions[i] = &clone
 		cache.replace(&clone)
 	}
