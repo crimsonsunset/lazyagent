@@ -71,12 +71,14 @@ type ActivityEntry struct {
 //
 // Priority:
 //  1. Blocked (Cursor says the chat waits on the user) → waiting, however old.
-//  2. Compacting (summary entry written recently).
-//  3. Most recent tool in RecentTools within ActivityTimeout.
-//  4. Running (the agent reports a turn in flight) → current tool or thinking.
-//  5. StatusWaitingForUser within WaitingTimeout (with grace period).
-//  6. LastActivity older than ActivityTimeout → idle.
-//  7. Current JSONL status → thinking if Claude is processing, idle otherwise.
+//  2. Run flag known and clear (Cursor says no turn in flight) → idle at once,
+//     instead of waiting out ActivityTimeout on the last tool.
+//  3. Compacting (summary entry written recently).
+//  4. Most recent tool in RecentTools within ActivityTimeout.
+//  5. Running (the agent reports a turn in flight) → current tool or thinking.
+//  6. StatusWaitingForUser within WaitingTimeout (with grace period).
+//  7. LastActivity older than ActivityTimeout → idle.
+//  8. Current JSONL status → thinking if Claude is processing, idle otherwise.
 func ResolveActivity(s *model.Session, now time.Time) ActivityKind {
 	sinceActivity := now.Sub(s.LastActivity)
 
@@ -84,6 +86,10 @@ func ResolveActivity(s *model.Session, now time.Time) ActivityKind {
 	// tool heuristics: the pending question is itself a recent tool call.
 	if s.Blocked {
 		return ActivityWaiting
+	}
+
+	if s.HasRunFlag && !s.Running {
+		return ActivityIdle
 	}
 
 	if !s.LastSummaryAt.IsZero() && now.Sub(s.LastSummaryAt) < ActivityTimeout {

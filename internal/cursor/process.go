@@ -288,21 +288,23 @@ func queryHeaderFlags(db *sql.DB) (map[string]headerFlags, error) {
 
 // applyHeaderFlags sets Running and Blocked from the header flags, cloning any
 // session that changed so a pointer shared with the manager is never mutated.
-// When the header table exists it is the source of truth for "waits on you",
-// so a turn that simply ended (last bubble is assistant text) reads as idle.
-// A nil map (older Cursor builds) keeps the last-bubble status as is.
+// When the header table exists it is the source of truth for "waits on you"
+// and for "turn in flight" (HasRunFlag), so a turn that simply ended reads as
+// idle right away. A nil map (older Cursor builds) keeps the last-bubble
+// status and the timestamp heuristics as is.
 func applyHeaderFlags(cache *SessionCache, sessions []*model.Session, flags map[string]headerFlags) []*model.Session {
+	hasRunFlag := flags != nil
 	for i, s := range sessions {
 		f := flags[s.SessionID]
 		status := s.Status
-		if flags != nil && status == model.StatusWaitingForUser {
+		if hasRunFlag && status == model.StatusWaitingForUser {
 			status = model.StatusIdle
 		}
-		if s.Running == f.running && s.Blocked == f.blocked && s.Status == status {
+		if s.Running == f.running && s.Blocked == f.blocked && s.Status == status && s.HasRunFlag == hasRunFlag {
 			continue
 		}
 		clone := *s
-		clone.Running, clone.Blocked, clone.Status = f.running, f.blocked, status
+		clone.Running, clone.Blocked, clone.Status, clone.HasRunFlag = f.running, f.blocked, status, hasRunFlag
 		sessions[i] = &clone
 		cache.replace(&clone)
 	}

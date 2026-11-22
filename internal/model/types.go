@@ -63,6 +63,7 @@ type Session struct {
 	CLI         bool // true = Cursor CLI (cursor-agent) session rather than an IDE chat
 	Running     bool // true = Cursor IDE says a turn is in flight (composer header unfinishedRunAt)
 	Blocked     bool // true = Cursor IDE says the chat waits on the user: a question, approval or plan (orange dot)
+	HasRunFlag  bool // true = Running comes from Cursor's composer headers, so !Running means the turn ended
 
 	// TouchedBranches are the other branches the chat worked on (Cursor IDE only).
 	TouchedBranches []string

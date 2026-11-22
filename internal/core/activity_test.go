@@ -125,6 +125,30 @@ func TestResolveActivity_RunningOutlastsTimeout(t *testing.T) {
 	}
 }
 
+// TestResolveActivity_ClearedRunFlagIsIdleAtOnce checks a Cursor chat whose turn ended
+// reads idle right away despite a fresh tool call, while a session with no run flag
+// (other providers, older Cursor) still keeps the tool visible for ActivityTimeout.
+func TestResolveActivity_ClearedRunFlagIsIdleAtOnce(t *testing.T) {
+	now := time.Now()
+	s := &model.Session{
+		SessionID: "s1", Agent: "cursor", HasRunFlag: true,
+		LastActivity: now, RecentTools: []model.ToolCall{{Name: "Shell", Timestamp: now}},
+	}
+	if got := ResolveActivity(s, now); got != ActivityIdle {
+		t.Fatalf("run flag clear, fresh tool: got %q, want %q", got, ActivityIdle)
+	}
+
+	s.Running = true
+	if got := ResolveActivity(s, now); got != ActivityRunning {
+		t.Fatalf("run flag set, fresh tool: got %q, want %q", got, ActivityRunning)
+	}
+
+	s.Running, s.HasRunFlag = false, false
+	if got := ResolveActivity(s, now); got != ActivityRunning {
+		t.Fatalf("no run flag, fresh tool: got %q, want %q", got, ActivityRunning)
+	}
+}
+
 // TestResolveActivity_BlockedWaitsOnUser checks a chat Cursor marks as waiting on the user
 // reads as waiting even with a fresh tool call (the pending question) and hours of quiet,
 // skips the grace period, and goes idle once the flag clears.
